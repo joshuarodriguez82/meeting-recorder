@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🎙 Meeting Recorder
 
 An AI-powered desktop meeting recorder for Windows that transcribes, identifies speakers, and summarizes your meetings — all with a single click.
@@ -97,3 +98,7 @@ Pull requests welcome! Please open an issue first to discuss major changes.
 
 MIT License — free to use, modify, and distribute.
 
+=======
+# meeting-recorder
+AI-powered meeting recorder with transcription, speaker detection, and summarization
+>>>>>>> 479fadf9352595e03faa6cf3322c3e5b7dc535b4
