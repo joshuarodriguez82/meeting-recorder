@@ -1,0 +1,29 @@
+# Virtual environment
+.venv/
+
+# API keys — never share these
+.env
+device_prefs.json
+
+# Recordings and personal data
+recordings/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Build artifacts
+dist/
+build/
+*.spec
+*.egg-info/
+
+# Logs
+*.log
+
+# Debug files
+debug_cal.py
+create_zip.py
+test_ollama.py
+MeetingRecorder_SourceCode.zip
