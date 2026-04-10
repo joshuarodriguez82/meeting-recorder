@@ -5,6 +5,9 @@ from tkinter import ttk
 from typing import Optional
 from core.audio_capture import list_input_devices, list_output_devices
 from ui import styles
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 PREFS_FILE = "device_prefs.json"
 

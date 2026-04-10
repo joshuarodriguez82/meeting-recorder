@@ -30,6 +30,7 @@ INCLUDE = [
     "ui/__init__.py",
     "ui/app_window.py",
     "ui/device_panel.py",
+    "ui/settings_dialog.py",
     "ui/speaker_panel.py",
     "ui/styles.py",
     "ui/transcript_panel.py",

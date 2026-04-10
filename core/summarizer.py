@@ -98,13 +98,59 @@ def _inline_markdown(text: str) -> str:
     return text
 
 
+MEETING_TEMPLATES = {
+    "General": (
+        "Please summarize this meeting transcript. "
+        "Include: key topics discussed, decisions made, "
+        "action items, and any follow-ups needed."
+    ),
+    "Requirements Gathering": (
+        "This is a requirements gathering meeting. Summarize with focus on: "
+        "1) Business context and problem statement discussed, "
+        "2) Functional requirements identified (what the system should do), "
+        "3) Non-functional requirements (performance, security, scalability), "
+        "4) Constraints and assumptions mentioned, "
+        "5) Open questions that need follow-up, "
+        "6) Stakeholder priorities and any conflicts between requirements."
+    ),
+    "Design Review": (
+        "This is a design/architecture review meeting. Summarize with focus on: "
+        "1) Solution overview and architecture discussed, "
+        "2) Design decisions made and their rationale, "
+        "3) Trade-offs considered, "
+        "4) Risks and concerns raised, "
+        "5) Feedback and requested changes, "
+        "6) Next steps and action items."
+    ),
+    "Sprint Planning": (
+        "This is a sprint planning meeting. Summarize with focus on: "
+        "1) Sprint goal agreed upon, "
+        "2) Stories/tasks committed to with owners, "
+        "3) Capacity concerns or blockers raised, "
+        "4) Dependencies identified, "
+        "5) Carry-over items from previous sprint, "
+        "6) Key risks to sprint delivery."
+    ),
+    "Stakeholder Update": (
+        "This is a stakeholder update meeting. Summarize with focus on: "
+        "1) Project status and progress reported, "
+        "2) Milestones achieved or missed, "
+        "3) Risks and issues escalated, "
+        "4) Decisions requested from stakeholders, "
+        "5) Decisions made by stakeholders, "
+        "6) Next steps and timeline updates."
+    ),
+}
+
+
 class Summarizer:
 
     def __init__(self, api_key: str):
         self._client = AsyncAnthropic(api_key=api_key)
 
-    async def summarize(self, transcript: str) -> str:
-        logger.info("Requesting meeting summary from Claude...")
+    async def summarize(self, transcript: str, template: str = "General") -> str:
+        prompt = MEETING_TEMPLATES.get(template, MEETING_TEMPLATES["General"])
+        logger.info(f"Requesting meeting summary (template={template}) from Claude...")
         try:
             message = await asyncio.wait_for(
                 self._client.messages.create(
@@ -112,12 +158,7 @@ class Summarizer:
                     max_tokens=1024,
                     messages=[{
                         "role": "user",
-                        "content": (
-                            "Please summarize this meeting transcript. "
-                            "Include: key topics discussed, decisions made, "
-                            "action items, and any follow-ups needed.\n\n"
-                            f"{transcript}"
-                        )
+                        "content": f"{prompt}\n\n{transcript}"
                     }]
                 ),
                 timeout=60.0
@@ -127,6 +168,75 @@ class Summarizer:
             return summary
         except Exception as e:
             raise RuntimeError(f"Summarization API call failed: {e}") from e
+
+    async def extract_action_items(self, transcript: str) -> str:
+        logger.info("Extracting action items from Claude...")
+        try:
+            message = await asyncio.wait_for(
+                self._client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=1024,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "Analyze this meeting transcript and extract the following "
+                            "in clearly structured markdown:\n\n"
+                            "## Action Items\n"
+                            "List each action item with: who is responsible, what they "
+                            "need to do, and by when (if mentioned). Use checkboxes.\n"
+                            "Format: - [ ] **[Owner]**: Action description (Due: date if mentioned)\n\n"
+                            "## Decisions Made\n"
+                            "List each decision that was agreed upon in the meeting.\n\n"
+                            "## Open Questions\n"
+                            "List questions that were raised but not resolved.\n\n"
+                            "If a section has no items, write 'None identified.'\n\n"
+                            f"{transcript}"
+                        )
+                    }]
+                ),
+                timeout=60.0
+            )
+            result = message.content[0].text
+            logger.info("Action items extracted.")
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Action items extraction failed: {e}") from e
+
+    async def extract_requirements(self, transcript: str) -> str:
+        logger.info("Extracting requirements from Claude...")
+        try:
+            message = await asyncio.wait_for(
+                self._client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2048,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "Analyze this meeting transcript and extract all requirements "
+                            "discussed. Return structured markdown with:\n\n"
+                            "## Functional Requirements\n"
+                            "| ID | Requirement | Priority | Owner |\n"
+                            "|---|---|---|---|\n"
+                            "| FR-001 | Description | High/Med/Low | Person if mentioned |\n\n"
+                            "## Non-Functional Requirements\n"
+                            "Same table format with IDs like NFR-001.\n\n"
+                            "## Constraints\n"
+                            "List any technical, business, or timeline constraints mentioned.\n\n"
+                            "## Assumptions\n"
+                            "List assumptions made during the discussion.\n\n"
+                            "Assign priority based on context clues (urgency, emphasis, "
+                            "stakeholder tone). If a section has no items, write 'None identified.'\n\n"
+                            f"{transcript}"
+                        )
+                    }]
+                ),
+                timeout=90.0
+            )
+            result = message.content[0].text
+            logger.info("Requirements extracted.")
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Requirements extraction failed: {e}") from e
 
     async def identify_speakers(self, transcript: str) -> Dict[str, str]:
         logger.info("Requesting speaker identification from Claude...")

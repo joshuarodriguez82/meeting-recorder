@@ -1,36 +1,37 @@
-# Material You — Dark theme with Blue accent
+# Material You — Light theme with blue accent
 
-BG_DARK = "#1a1c1e"
-BG_PANEL = "#2d2f31"
-BG_INPUT = "#3b3d3f"
-BG_CARD = "#2d2f31"
+BG_DARK = "#eef2f8"
+BG_PANEL = "#ffffff"
+BG_INPUT = "#f0f4fa"
+BG_CARD = "#ffffff"
 
-ACCENT = "#4fc3f7"
-ACCENT_DIM = "#0277bd"
-ACCENT_BG = "#003a57"
+ACCENT = "#1565c0"
+ACCENT_DIM = "#42a5f5"
+ACCENT_BG = "#e3f2fd"
 
-TEXT_PRIMARY = "#e6e1e5"
-TEXT_MUTED = "#938f99"
-TEXT_HINT = "#6b6870"
+TEXT_PRIMARY = "#1a2b3c"
+TEXT_MUTED = "#546e7a"
+TEXT_HINT = "#90a4ae"
 
-DANGER = "#b5242a"
-DANGER_DIM = "#ff8a80"
+DANGER = "#d32f2f"
+DANGER_DIM = "#ef5350"
 SUCCESS = "#2e7d32"
-SUCCESS_DIM = "#a5d6a7"
+SUCCESS_DIM = "#66bb6a"
 WARNING = "#e65100"
-WARNING_DIM = "#ffcc80"
+WARNING_DIM = "#ffa726"
 
-BORDER = "#4a4d50"
-BORDER_SUBTLE = "#3b3d3f"
+BORDER = "#bbdefb"
+BORDER_SUBTLE = "#e3f2fd"
 
 RADIUS = 16
 RADIUS_SM = 12
 RADIUS_PILL = 20
 
-FONT_HEADER = ("Segoe UI", 18, "bold")
-FONT_TITLE = ("Segoe UI", 13)
-FONT_BODY = ("Segoe UI", 11)
-FONT_SMALL = ("Segoe UI", 10)
+FONT_FAMILY = "Segoe UI Variable Display"
+FONT_HEADER = (FONT_FAMILY, 20, "bold")
+FONT_TITLE = (FONT_FAMILY, 13)
+FONT_BODY = (FONT_FAMILY, 11)
+FONT_SMALL = (FONT_FAMILY, 10)
 FONT_MONO = ("Cascadia Code", 10)
 
 PAD = 12

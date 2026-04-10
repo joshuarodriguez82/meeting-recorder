@@ -16,6 +16,9 @@ class Session:
         self.speakers: Dict[str, Speaker] = {}
         self.segments: List[Segment] = []
         self.summary: Optional[str] = None
+        self.action_items: Optional[str] = None
+        self.requirements: Optional[str] = None
+        self.template: str = "General"
 
     def get_or_create_speaker(self, speaker_id: str) -> Speaker:
         if speaker_id not in self.speakers:
@@ -48,6 +51,9 @@ class Session:
             "speakers": {k: v.to_dict() for k, v in self.speakers.items()},
             "segments": [s.to_dict() for s in self.segments],
             "summary": self.summary,
+            "action_items": self.action_items,
+            "requirements": self.requirements,
+            "template": self.template,
         }
 
 

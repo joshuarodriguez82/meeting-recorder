@@ -34,13 +34,13 @@ def main() -> None:
     except EnvironmentError as e:
         print(f"\n[CONFIG ERROR]\n{e}\n")
         sys.exit(1)
+
+    logger.info("Starting Meeting Recorder...")
+    app = AppWindow(settings)
     try:
         app.iconbitmap("meeting_recorder.ico")
     except Exception:
         pass
-
-    logger.info("Starting Meeting Recorder...")
-    app = AppWindow(settings)
     app.mainloop()
 
 

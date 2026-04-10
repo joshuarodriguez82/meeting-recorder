@@ -8,13 +8,13 @@ import os
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, ttk
 from typing import Optional
 import uuid
 
 from config.settings import Settings
 from core.diarization import DiarizationEngine
-from core.summarizer import Summarizer
+from core.summarizer import Summarizer, MEETING_TEMPLATES
 from core.transcription import TranscriptionEngine
 from models.session import Session
 from services.export_service import ExportService
@@ -22,6 +22,7 @@ from services.recording_service import RecordingService
 from services.session_service import SessionService
 from ui import styles
 from ui.device_panel import DevicePanel
+from ui.settings_dialog import SettingsDialog
 from ui.speaker_panel import SpeakerPanel
 from ui.transcript_panel import TranscriptPanel
 from utils.logger import get_logger
@@ -52,21 +53,23 @@ class AppWindow(tk.Tk):
         self._session: Optional[Session] = None
         self._active_meeting: Optional[dict] = None
         self._progress_after = None
+        self._models_ready = False
 
-        self._transcription = TranscriptionEngine(settings.whisper_model)
-        self._diarization   = DiarizationEngine(settings.hf_token, settings.max_speakers)
+        self._transcription: Optional[TranscriptionEngine] = None
+        self._diarization: Optional[DiarizationEngine] = None
         self._summarizer    = Summarizer(settings.anthropic_api_key)
         self._session_svc   = SessionService(settings.recordings_dir)
         self._export_svc    = ExportService(settings.recordings_dir)
-        self._recording_svc = RecordingService(
-            settings=settings,
-            transcription_engine=self._transcription,
-            diarization_engine=self._diarization,
-            on_status=self._thread_safe_status,
-        )
+        self._recording_svc: Optional[RecordingService] = None
 
         self._build_window()
         self._build_layout()
+
+        # Load ML models in background so the window appears instantly
+        self._set_status("Loading models...")
+        self._rec_btn.config(state=tk.DISABLED)
+        self._load_btn.config(state=tk.DISABLED)
+        threading.Thread(target=self._load_models, daemon=True).start()
 
     def _build_window(self) -> None:
         self.title("Meeting Recorder")
@@ -78,43 +81,69 @@ class AppWindow(tk.Tk):
             self.iconbitmap("meeting_recorder.ico")
         except Exception:
             pass
+        self._build_menu()
+
+    def _build_menu(self) -> None:
+        menubar = tk.Menu(self, bg=styles.BG_PANEL, fg=styles.TEXT_PRIMARY,
+                          activebackground=styles.ACCENT_BG,
+                          activeforeground=styles.ACCENT, relief=tk.FLAT)
+
+        file_menu = tk.Menu(menubar, tearoff=0, bg=styles.BG_PANEL,
+                            fg=styles.TEXT_PRIMARY,
+                            activebackground=styles.ACCENT_BG,
+                            activeforeground=styles.ACCENT)
+        file_menu.add_command(label="Settings...", command=self._open_settings)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        help_menu = tk.Menu(menubar, tearoff=0, bg=styles.BG_PANEL,
+                            fg=styles.TEXT_PRIMARY,
+                            activebackground=styles.ACCENT_BG,
+                            activeforeground=styles.ACCENT)
+        help_menu.add_command(label="Open Logs Folder", command=self._open_logs_folder)
+        help_menu.add_separator()
+        help_menu.add_command(label="About", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self.config(menu=menubar)
 
     def _build_layout(self) -> None:
         outer = tk.Frame(self, bg=styles.BG_DARK)
         outer.pack(fill=tk.BOTH, expand=True, padx=styles.PAD_LG, pady=styles.PAD_LG)
 
         # ── Top bar ──────────────────────────────────────────────────
-        topbar = tk.Frame(outer, bg=styles.BG_DARK)
-        topbar.pack(fill=tk.X, pady=(0, styles.PAD))
+        topbar = tk.Frame(outer, bg=styles.ACCENT)
+        topbar.pack(fill=tk.X, pady=(0, styles.PAD), ipady=10)
 
-        icon_frame = tk.Frame(topbar, bg=styles.ACCENT_BG, width=42, height=42)
-        icon_frame.pack(side=tk.LEFT)
+        icon_frame = tk.Frame(topbar, bg=styles.ACCENT, width=42, height=42)
+        icon_frame.pack(side=tk.LEFT, padx=(12, 0))
         icon_frame.pack_propagate(False)
-        tk.Label(icon_frame, text="🎙", bg=styles.ACCENT_BG,
-                 font=("Segoe UI", 16)).place(relx=0.5, rely=0.5, anchor="center")
+        tk.Label(icon_frame, text="🎙", bg=styles.ACCENT,
+                 font=(styles.FONT_FAMILY, 16)).place(relx=0.5, rely=0.5, anchor="center")
 
-        title_block = tk.Frame(topbar, bg=styles.BG_DARK)
+        title_block = tk.Frame(topbar, bg=styles.ACCENT)
         title_block.pack(side=tk.LEFT, padx=(10, 0))
-        tk.Label(title_block, text="Meeting Recorder", bg=styles.BG_DARK,
-                 fg=styles.TEXT_PRIMARY, font=styles.FONT_HEADER).pack(anchor="w")
+        tk.Label(title_block, text="Meeting Recorder", bg=styles.ACCENT,
+                 fg="#ffffff", font=styles.FONT_HEADER).pack(anchor="w")
 
         self._status_var = tk.StringVar(value="Ready")
         tk.Label(topbar, textvariable=self._status_var,
-                 bg=styles.BG_DARK, fg=styles.ACCENT,
-                 font=styles.FONT_SMALL).pack(side=tk.RIGHT, anchor="s")
+                 bg=styles.ACCENT, fg="#e3f2fd",
+                 font=styles.FONT_SMALL).pack(side=tk.RIGHT, padx=12, anchor="s")
 
-        # ── Meeting name card ─────────────────────────────────────────
-        name_card = tk.Frame(outer, bg=styles.BG_PANEL,
+        # ── Meeting info card ─────────────────────────────────────────
+        info_card = tk.Frame(outer, bg=styles.BG_PANEL,
                               highlightbackground=styles.BORDER,
                               highlightthickness=1)
-        name_card.pack(fill=tk.X, pady=(0, styles.PAD))
-        tk.Label(name_card, text="MEETING NAME",
-                 bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=14, pady=(10, 4))
+        info_card.pack(fill=tk.X, pady=(0, styles.PAD))
 
-        name_row = tk.Frame(name_card, bg=styles.BG_PANEL)
-        name_row.pack(fill=tk.X, padx=8, pady=(0, 10))
-
+        # Meeting name row
+        name_row = tk.Frame(info_card, bg=styles.BG_PANEL)
+        name_row.pack(fill=tk.X, padx=14, pady=(10, 6))
+        tk.Label(name_row, text="Meeting", bg=styles.BG_PANEL,
+                 fg=styles.TEXT_HINT, font=styles.FONT_SMALL,
+                 width=10, anchor="w").pack(side=tk.LEFT)
         self._meeting_name_var = tk.StringVar(
             value=datetime.datetime.now().strftime("%Y-%m-%d Meeting"))
         self._name_entry = tk.Entry(
@@ -125,45 +154,43 @@ class AppWindow(tk.Tk):
             font=styles.FONT_BODY, relief=tk.FLAT,
             highlightbackground=styles.BORDER, highlightthickness=1,
         )
-        self._name_entry.pack(fill=tk.X, ipady=8)
+        self._name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6)
         self._meeting_name_var.trace_add("write", self._on_name_change)
 
-        # ── Device card ───────────────────────────────────────────────
-        device_card = tk.Frame(outer, bg=styles.BG_PANEL,
-                                highlightbackground=styles.BORDER,
-                                highlightthickness=1)
-        device_card.pack(fill=tk.X, pady=(0, styles.PAD))
-        tk.Label(device_card, text="AUDIO DEVICES",
-                 bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=14, pady=(10, 4))
-        self._device_panel = DevicePanel(device_card)
-        self._device_panel.pack(fill=tk.X, padx=8, pady=(0, 8))
+        # Template row
+        template_row = tk.Frame(info_card, bg=styles.BG_PANEL)
+        template_row.pack(fill=tk.X, padx=14, pady=(0, 10))
+        tk.Label(template_row, text="Template", bg=styles.BG_PANEL,
+                 fg=styles.TEXT_HINT, font=styles.FONT_SMALL,
+                 width=10, anchor="w").pack(side=tk.LEFT)
+        self._template_var = tk.StringVar(value="General")
+        template_combo = ttk.Combobox(
+            template_row, textvariable=self._template_var,
+            values=list(MEETING_TEMPLATES.keys()),
+            state="readonly", width=24)
+        template_combo.pack(side=tk.LEFT)
 
-        # ── Progress stages ───────────────────────────────────────────
-        prog_card = tk.Frame(outer, bg=styles.BG_PANEL,
-                              highlightbackground=styles.BORDER,
-                              highlightthickness=1)
-        prog_card.pack(fill=tk.X, pady=(0, styles.PAD))
+        # Device panel (lives in settings dialog, created here for access)
+        self._device_panel = DevicePanel(self)
 
-        prog_inner = tk.Frame(prog_card, bg=styles.BG_PANEL)
-        prog_inner.pack(fill=tk.X, padx=14, pady=10)
+        # ── Progress stages (compact) ─────────────────────────────────
+        prog_row = tk.Frame(outer, bg=styles.BG_DARK)
+        prog_row.pack(fill=tk.X, pady=(0, 6))
 
         self._stage_labels = {}
         stages = [
             ("transcribe", "Transcribe"),
             ("diarize",    "Diarize"),
-            ("speakers",   "ID Speakers"),
+            ("speakers",   "Speakers"),
             ("complete",   "Complete"),
         ]
         for key, label in stages:
-            col = tk.Frame(prog_inner, bg=styles.BG_PANEL)
-            col.pack(side=tk.LEFT, expand=True, fill=tk.X)
-            dot = tk.Label(col, text="○", bg=styles.BG_PANEL,
-                           fg=styles.TEXT_HINT, font=("Segoe UI", 14))
-            dot.pack()
-            lbl = tk.Label(col, text=label, bg=styles.BG_PANEL,
+            dot = tk.Label(prog_row, text="○", bg=styles.BG_DARK,
+                           fg=styles.TEXT_HINT, font=(styles.FONT_FAMILY, 10))
+            dot.pack(side=tk.LEFT)
+            lbl = tk.Label(prog_row, text=label, bg=styles.BG_DARK,
                            fg=styles.TEXT_HINT, font=styles.FONT_SMALL)
-            lbl.pack()
+            lbl.pack(side=tk.LEFT, padx=(0, 16))
             self._stage_labels[key] = (dot, lbl)
 
         # ── Action row 1 ──────────────────────────────────────────────
@@ -175,46 +202,74 @@ class AppWindow(tk.Tk):
         self._rec_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self._load_btn = self._pill_button(
-            row1, "📂  Load File", styles.ACCENT_DIM, self._load_audio_file)
+            row1, "📂  Load File", styles.ACCENT, self._load_audio_file)
         self._load_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self._process_btn = self._pill_button(
-            row1, "⚙  Process", styles.BG_INPUT, self._process, outline=True)
+            row1, "⚙  Process", styles.ACCENT_DIM, self._process, outline=True)
         self._process_btn.pack(side=tk.LEFT)
         self._process_btn.config(state=tk.DISABLED)
 
-        # ── Action row 2 ──────────────────────────────────────────────
+        # ── AI actions row ─────────────────────────────────────────────
         row2 = tk.Frame(outer, bg=styles.BG_DARK)
-        row2.pack(fill=tk.X, pady=(0, styles.PAD))
+        row2.pack(fill=tk.X, pady=(0, 8))
 
         self._summarize_btn = self._pill_button(
             row2, "✨  Summarize", styles.BG_INPUT, self._summarize, outline=True)
         self._summarize_btn.pack(side=tk.LEFT, padx=(0, 8))
         self._summarize_btn.config(state=tk.DISABLED)
 
+        self._action_items_btn = self._pill_button(
+            row2, "📋  Action Items", styles.BG_INPUT, self._extract_action_items, outline=True)
+        self._action_items_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self._action_items_btn.config(state=tk.DISABLED)
+
+        self._requirements_btn = self._pill_button(
+            row2, "📝  Requirements", styles.BG_INPUT, self._extract_requirements, outline=True)
+        self._requirements_btn.pack(side=tk.LEFT)
+        self._requirements_btn.config(state=tk.DISABLED)
+
+        # ── Export row ────────────────────────────────────────────────
+        row3 = tk.Frame(outer, bg=styles.BG_DARK)
+        row3.pack(fill=tk.X, pady=(0, styles.PAD))
+
         self._export_btn = self._pill_button(
-            row2, "💾  Export", styles.BG_INPUT, self._export, outline=True)
+            row3, "💾  Export", styles.BG_INPUT, self._export, outline=True)
         self._export_btn.pack(side=tk.LEFT, padx=(0, 8))
         self._export_btn.config(state=tk.DISABLED)
 
         self._email_btn = self._pill_button(
-            row2, "✉  Email Summary", styles.BG_INPUT, self._email_summary, outline=True)
+            row3, "✉  Email", styles.BG_INPUT, self._email_summary, outline=True)
         self._email_btn.pack(side=tk.LEFT, padx=(0, 8))
         self._email_btn.config(state=tk.DISABLED)
 
         self._folder_btn = self._pill_button(
-            row2, "📁  Recordings", styles.BG_INPUT, self._open_recordings, outline=True)
+            row3, "📁  Recordings", styles.BG_INPUT, self._open_recordings, outline=True)
         self._folder_btn.pack(side=tk.LEFT)
 
-        # ── Speaker card ──────────────────────────────────────────────
+        # ── Speaker card (collapsible) ────────────────────────────────
         speaker_card = tk.Frame(outer, bg=styles.BG_PANEL,
                                  highlightbackground=styles.BORDER,
                                  highlightthickness=1)
         speaker_card.pack(fill=tk.X, pady=(0, styles.PAD))
-        tk.Label(speaker_card, text="SPEAKERS",
+
+        speaker_header = tk.Frame(speaker_card, bg=styles.BG_PANEL)
+        speaker_header.pack(fill=tk.X, padx=14, pady=(8, 0))
+        tk.Label(speaker_header, text="SPEAKERS",
                  bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=14, pady=(10, 4))
-        self._speaker_panel = SpeakerPanel(speaker_card, on_rename=self._on_rename_speaker)
+                 font=styles.FONT_SMALL).pack(side=tk.LEFT)
+        self._speaker_toggle_var = tk.StringVar(value="Show")
+        self._speaker_toggle = tk.Button(
+            speaker_header, textvariable=self._speaker_toggle_var,
+            bg=styles.BG_PANEL, fg=styles.ACCENT, font=styles.FONT_SMALL,
+            relief=tk.FLAT, cursor="hand2", bd=0,
+            command=self._toggle_speakers)
+        self._speaker_toggle.pack(side=tk.RIGHT)
+
+        self._speaker_body = tk.Frame(speaker_card, bg=styles.BG_PANEL)
+        # Start collapsed
+        self._speaker_expanded = False
+        self._speaker_panel = SpeakerPanel(self._speaker_body, on_rename=self._on_rename_speaker)
         self._speaker_panel.pack(fill=tk.X, padx=8, pady=(0, 8))
 
         # ── Transcript card ───────────────────────────────────────────
@@ -224,9 +279,38 @@ class AppWindow(tk.Tk):
         transcript_card.pack(fill=tk.BOTH, expand=True)
         tk.Label(transcript_card, text="TRANSCRIPT",
                  bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=14, pady=(10, 4))
+                 font=styles.FONT_SMALL).pack(anchor="w", padx=14, pady=(10, 4))
         self._transcript_panel = TranscriptPanel(transcript_card)
         self._transcript_panel.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+    # ------------------------------------------------------------------ #
+    # Model loading (background)
+    # ------------------------------------------------------------------ #
+
+    def _load_models(self) -> None:
+        try:
+            logger.info("Loading transcription engine...")
+            self._transcription = TranscriptionEngine(self._settings.whisper_model)
+            logger.info("Loading diarization engine...")
+            self._diarization = DiarizationEngine(
+                self._settings.hf_token, self._settings.max_speakers)
+            self._recording_svc = RecordingService(
+                settings=self._settings,
+                transcription_engine=self._transcription,
+                diarization_engine=self._diarization,
+                on_status=self._thread_safe_status,
+            )
+            self.after(0, self._on_models_ready)
+        except Exception as e:
+            logger.error(f"Failed to load models: {e}")
+            self.after(0, lambda: self._set_status(f"Model load failed: {e}"))
+
+    def _on_models_ready(self) -> None:
+        self._models_ready = True
+        self._rec_btn.config(state=tk.NORMAL)
+        self._load_btn.config(state=tk.NORMAL)
+        self._set_status("Ready")
+        logger.info("All models loaded. Ready to record.")
 
     # ------------------------------------------------------------------ #
     # Meeting name
@@ -282,6 +366,8 @@ class AppWindow(tk.Tk):
     # ------------------------------------------------------------------ #
 
     def _toggle_recording(self) -> None:
+        if not self._models_ready or not self._recording_svc:
+            return
         if not self._recording_svc.is_recording:
             self._active_meeting = None
             mic_idx = self._device_panel.get_mic_index()
@@ -295,17 +381,19 @@ class AppWindow(tk.Tk):
             self._reset_stages()
             self._transcript_panel.clear()
             self._rec_btn.config(text="⏹  Stop Recording",
-                                  bg=styles.BG_INPUT, fg=styles.DANGER_DIM)
+                                  bg=styles.DANGER_DIM, fg="#ffffff")
             self._load_btn.config(state=tk.DISABLED)
             self._process_btn.config(state=tk.DISABLED)
             self._summarize_btn.config(state=tk.DISABLED)
+            self._action_items_btn.config(state=tk.DISABLED)
+            self._requirements_btn.config(state=tk.DISABLED)
             self._export_btn.config(state=tk.DISABLED)
             self._email_btn.config(state=tk.DISABLED)
             self._set_status("Recording...")
         else:
             self._session = self._recording_svc.stop_recording()
             self._rec_btn.config(text="⏺  Start Recording",
-                                  bg=styles.DANGER, fg=styles.TEXT_PRIMARY)
+                                  bg=styles.DANGER, fg="#ffffff")
             self._load_btn.config(state=tk.NORMAL)
             if self._session and self._session.audio_path:
                 self._process_btn.config(state=tk.NORMAL,
@@ -384,6 +472,10 @@ class AppWindow(tk.Tk):
         self._transcript_panel.set_text(session.full_transcript())
         self._summarize_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                     fg=styles.TEXT_PRIMARY)
+        self._action_items_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                       fg=styles.TEXT_PRIMARY)
+        self._requirements_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                       fg=styles.TEXT_PRIMARY)
         self._export_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                  fg=styles.TEXT_PRIMARY)
         try:
@@ -503,19 +595,20 @@ class AppWindow(tk.Tk):
             return
         transcript_snapshot = self._session.full_transcript()
         session_ref = self._session
+        template = self._template_var.get()
+        session_ref.template = template
         self._summarize_btn.config(state=tk.DISABLED, bg=styles.BG_INPUT,
                                     fg=styles.TEXT_MUTED)
-        self._set_status("Generating AI summary...")
+        self._set_status(f"Generating AI summary ({template})...")
         summarizer = self._summarizer
 
         def _coro():
-            return summarizer.summarize(transcript_snapshot)
+            return summarizer.summarize(transcript_snapshot, template=template)
 
         def _on_success(summary):
             def _apply():
                 session_ref.summary = summary
-                self._transcript_panel.set_text(
-                    session_ref.full_transcript() + "\n\n── SUMMARY ──\n\n" + summary)
+                self._update_transcript_display()
                 self._set_status("Summary complete.")
                 self._summarize_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                             fg=styles.TEXT_PRIMARY)
@@ -535,6 +628,101 @@ class AppWindow(tk.Tk):
                 state=tk.NORMAL, bg=styles.ACCENT_DIM, fg=styles.TEXT_PRIMARY))
 
         _run_async_in_thread(_coro, _on_success, _on_error)
+
+    def _extract_action_items(self) -> None:
+        if not self._session or not self._session.segments:
+            messagebox.showwarning("No Transcript", "Please process a recording first.")
+            return
+        transcript_snapshot = self._session.full_transcript()
+        session_ref = self._session
+        self._action_items_btn.config(state=tk.DISABLED, bg=styles.BG_INPUT,
+                                       fg=styles.TEXT_MUTED)
+        self._set_status("Extracting action items...")
+        summarizer = self._summarizer
+
+        def _coro():
+            return summarizer.extract_action_items(transcript_snapshot)
+
+        def _on_success(result):
+            def _apply():
+                session_ref.action_items = result
+                self._update_transcript_display()
+                self._set_status("Action items extracted.")
+                self._action_items_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                               fg=styles.TEXT_PRIMARY)
+                try:
+                    self._export_svc.export_action_items(session_ref)
+                    self._session_svc.save(session_ref)
+                except Exception as ex:
+                    logger.error(f"Failed to auto-save action items: {ex}")
+            self.after(0, _apply)
+
+        def _on_error(e):
+            self.after(0, lambda: messagebox.showerror("Extraction Error", str(e)))
+            self.after(0, lambda: self._set_status("Action items extraction failed."))
+            self.after(0, lambda: self._action_items_btn.config(
+                state=tk.NORMAL, bg=styles.ACCENT_DIM, fg=styles.TEXT_PRIMARY))
+
+        _run_async_in_thread(_coro, _on_success, _on_error)
+
+    def _extract_requirements(self) -> None:
+        if not self._session or not self._session.segments:
+            messagebox.showwarning("No Transcript", "Please process a recording first.")
+            return
+        transcript_snapshot = self._session.full_transcript()
+        session_ref = self._session
+        self._requirements_btn.config(state=tk.DISABLED, bg=styles.BG_INPUT,
+                                       fg=styles.TEXT_MUTED)
+        self._set_status("Extracting requirements...")
+        summarizer = self._summarizer
+
+        def _coro():
+            return summarizer.extract_requirements(transcript_snapshot)
+
+        def _on_success(result):
+            def _apply():
+                session_ref.requirements = result
+                self._update_transcript_display()
+                self._set_status("Requirements extracted.")
+                self._requirements_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                               fg=styles.TEXT_PRIMARY)
+                try:
+                    self._export_svc.export_requirements(session_ref)
+                    self._session_svc.save(session_ref)
+                except Exception as ex:
+                    logger.error(f"Failed to auto-save requirements: {ex}")
+            self.after(0, _apply)
+
+        def _on_error(e):
+            self.after(0, lambda: messagebox.showerror("Extraction Error", str(e)))
+            self.after(0, lambda: self._set_status("Requirements extraction failed."))
+            self.after(0, lambda: self._requirements_btn.config(
+                state=tk.NORMAL, bg=styles.ACCENT_DIM, fg=styles.TEXT_PRIMARY))
+
+        _run_async_in_thread(_coro, _on_success, _on_error)
+
+    def _toggle_speakers(self) -> None:
+        if self._speaker_expanded:
+            self._speaker_body.pack_forget()
+            self._speaker_toggle_var.set("Show")
+            self._speaker_expanded = False
+        else:
+            self._speaker_body.pack(fill=tk.X)
+            self._speaker_toggle_var.set("Hide")
+            self._speaker_expanded = True
+
+    def _update_transcript_display(self) -> None:
+        """Rebuild the transcript panel with all available sections."""
+        if not self._session:
+            return
+        parts = [self._session.full_transcript()]
+        if self._session.summary:
+            parts.append("── SUMMARY ──\n\n" + self._session.summary)
+        if self._session.action_items:
+            parts.append("── ACTION ITEMS ──\n\n" + self._session.action_items)
+        if self._session.requirements:
+            parts.append("── REQUIREMENTS ──\n\n" + self._session.requirements)
+        self._transcript_panel.set_text("\n\n".join(parts))
 
     # ------------------------------------------------------------------ #
     # Email summary
@@ -556,6 +744,8 @@ class AppWindow(tk.Tk):
         self._email_btn.config(state=tk.DISABLED, fg=styles.TEXT_MUTED)
         self._set_status("Sending email...")
         session_summary = self._session.summary
+        session_ref = self._session
+        email_to = self._settings.email_to
 
         def _send():
             try:
@@ -591,17 +781,23 @@ class AppWindow(tk.Tk):
                         f"Transcript saved to: {t_path}</p>"
                     )
 
-                formatted_summary = self._summarizer.summary_to_html(session_summary)
+                to_html = self._summarizer.summary_to_html
+
+                sections_html = ""
+                if session_summary:
+                    sections_html += self._email_section("Summary", to_html(session_summary))
+                if session_ref.action_items:
+                    sections_html += self._email_section("Action Items", to_html(session_ref.action_items))
+                if session_ref.requirements:
+                    sections_html += self._email_section("Requirements", to_html(session_ref.requirements))
+
                 html = f"""
 <html><body style="font-family:Segoe UI,sans-serif;color:#1a1a1a;max-width:680px;">
-<div style="background:#003a57;padding:20px 24px;border-radius:8px;margin-bottom:20px;">
-  <h2 style="color:#4fc3f7;margin:0;font-size:18px;">Meeting Recorder Summary</h2>
-  <p style="color:#90caf9;margin:4px 0 0;font-size:13px;">{title} &mdash; {date_str}</p>
+<div style="background:#1565c0;padding:20px 24px;border-radius:8px;margin-bottom:20px;">
+  <h2 style="color:#ffffff;margin:0;font-size:18px;">Meeting Notes</h2>
+  <p style="color:#e3f2fd;margin:4px 0 0;font-size:13px;">{title} &mdash; {date_str}</p>
 </div>
-<div style="background:#f5f5f5;padding:20px 24px;border-radius:8px;
-            font-size:14px;line-height:1.7;color:#222;">
-{formatted_summary}
-</div>
+{sections_html}
 {transcript_line}
 <p style="font-size:11px;color:#aaa;margin-top:24px;
           border-top:1px solid #eee;padding-top:12px;">
@@ -612,7 +808,7 @@ class AppWindow(tk.Tk):
                 mail.Subject    = f"Meeting Notes: {title} ({date_str})"
                 mail.BodyFormat = 2
                 mail.HTMLBody   = html
-                mail.To         = ns.CurrentUser.Address
+                mail.To         = email_to if email_to else ns.CurrentUser.Address
                 mail.Send()
                 pythoncom.CoUninitialize()
 
@@ -647,12 +843,15 @@ class AppWindow(tk.Tk):
             return
         try:
             self._session.display_name = self._get_meeting_name()
-            t_path = self._export_svc.export_transcript(self._session)
-            s_path = (self._export_svc.export_summary(self._session)
-                      if self._session.summary else None)
-            msg = f"Transcript saved:\n{t_path}"
-            if s_path:
-                msg += f"\n\nSummary saved:\n{s_path}"
+            paths = []
+            paths.append(self._export_svc.export_transcript(self._session))
+            if self._session.summary:
+                paths.append(self._export_svc.export_summary(self._session))
+            if self._session.action_items:
+                paths.append(self._export_svc.export_action_items(self._session))
+            if self._session.requirements:
+                paths.append(self._export_svc.export_requirements(self._session))
+            msg = "Exported files:\n" + "\n".join(paths)
             messagebox.showinfo("Export Complete", msg)
         except Exception as e:
             messagebox.showerror("Export Failed", str(e))
@@ -687,18 +886,47 @@ class AppWindow(tk.Tk):
     def _pill_button(self, parent, text, color, command, outline=False) -> tk.Button:
         if outline:
             return tk.Button(
-                parent, text=text, bg=styles.BG_DARK, fg=styles.TEXT_MUTED,
+                parent, text=text, bg=styles.BG_PANEL, fg=styles.ACCENT,
                 font=styles.FONT_BODY, relief=tk.FLAT, padx=16, pady=8,
-                cursor="hand2", activebackground=styles.BG_INPUT,
-                activeforeground=styles.TEXT_PRIMARY, command=command,
-                highlightbackground=styles.BORDER, highlightthickness=1,
+                cursor="hand2", activebackground=styles.ACCENT_BG,
+                activeforeground=styles.ACCENT, command=command,
+                highlightbackground=styles.ACCENT_DIM, highlightthickness=1,
             )
         return tk.Button(
-            parent, text=text, bg=color, fg=styles.TEXT_PRIMARY,
+            parent, text=text, bg=color, fg="#ffffff",
             font=styles.FONT_BODY, relief=tk.FLAT, padx=16, pady=8,
             cursor="hand2", activebackground=color,
-            activeforeground=styles.TEXT_PRIMARY, command=command,
+            activeforeground="#ffffff", command=command,
         )
+
+    @staticmethod
+    def _email_section(title: str, content_html: str) -> str:
+        return (
+            f'<div style="margin-bottom:16px;">'
+            f'<h3 style="color:#1565c0;font-size:15px;margin:0 0 8px;'
+            f'border-bottom:2px solid #bbdefb;padding-bottom:4px;">{title}</h3>'
+            f'<div style="background:#f5f5f5;padding:16px 20px;border-radius:8px;'
+            f'font-size:14px;line-height:1.7;color:#222;">'
+            f'{content_html}</div></div>'
+        )
+
+    def _open_settings(self) -> None:
+        SettingsDialog(self, self._settings, device_panel=self._device_panel)
+
+    def _open_logs_folder(self) -> None:
+        logs_dir = os.path.abspath(self._settings.recordings_dir)
+        try:
+            os.startfile(logs_dir)
+        except Exception:
+            messagebox.showinfo("Logs", f"Session logs are in:\n{logs_dir}")
+
+    def _show_about(self) -> None:
+        messagebox.showinfo(
+            "About Meeting Recorder",
+            "Meeting Recorder v1.0\n\n"
+            "AI-powered meeting transcription,\n"
+            "speaker diarization, and summarization.\n\n"
+            "Powered by Whisper, Pyannote, and Claude.")
 
     def _on_close(self) -> None:
         if self._recording_svc.is_recording:

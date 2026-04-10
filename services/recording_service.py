@@ -3,6 +3,7 @@ Orchestrates the full recording lifecycle.
 """
 
 import asyncio
+import logging
 import threading
 import uuid
 from datetime import datetime
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 import numpy as np
+import soundfile as sf
 from math import gcd
 from scipy.signal import resample_poly
 
@@ -24,8 +26,9 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+SESSION_LOG_FMT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
 TARGET_SR = 16000
-MAX_CHUNKS = int((90 * 60 * TARGET_SR) / 1024)
 
 
 def _resample(audio: np.ndarray, orig_sr: int) -> np.ndarray:
@@ -53,10 +56,13 @@ class RecordingService:
         self._on_status = on_status or (lambda _: None)
         self._session: Optional[Session] = None
         self._capture: Optional[AudioCapture] = None
-        self._audio_chunks: List[np.ndarray] = []
+        self._wav_writer: Optional[sf.SoundFile] = None
+        self._wav_temp_path: Optional[str] = None
         self._chunks_lock = threading.Lock()
         self._recording = False
         self._capture_sr = TARGET_SR
+        self._chunk_count = 0
+        self._session_log_handler: Optional[logging.FileHandler] = None
 
     @property
     def current_session(self) -> Optional[Session]:
@@ -81,14 +87,21 @@ class RecordingService:
         session_id = uuid.uuid4().hex[:8].upper()
         self._session = Session(session_id=session_id)
 
-        with self._chunks_lock:
-            self._audio_chunks = []
+        # Start per-session log file
+        self._start_session_log(session_id)
 
         self._recording = True
+        self._chunk_count = 0
+        recordings_dir = Path(self._settings.recordings_dir)
+        recordings_dir.mkdir(parents=True, exist_ok=True)
+        self._loopback_temp_path = str(
+            recordings_dir / f"_loopback_{session_id}.wav"
+        ) if output_device_index is not None else None
         self._capture = AudioCapture(
             mic_device_index=mic_device_index,
             output_device_index=output_device_index,
             on_chunk=self._on_audio_chunk,
+            loopback_wav_path=self._loopback_temp_path,
         )
 
         try:
@@ -101,6 +114,26 @@ class RecordingService:
             self._recording = False
             self._capture = None
             raise RuntimeError(f"Failed to start audio capture: {e}") from e
+
+        # Open a temp WAV file to stream audio to disk during recording
+        try:
+            recordings_dir = Path(self._settings.recordings_dir)
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            self._wav_temp_path = str(
+                recordings_dir / f"_recording_{session_id}.wav"
+            )
+            self._wav_writer = sf.SoundFile(
+                self._wav_temp_path,
+                mode="w",
+                samplerate=self._capture_sr,
+                channels=1,
+                subtype="FLOAT",
+            )
+        except Exception as e:
+            self._recording = False
+            self._capture.stop()
+            self._capture = None
+            raise RuntimeError(f"Failed to open recording file: {e}") from e
 
         self._on_status(f"Recording started — Session {session_id}")
         logger.info(f"Session {session_id} recording started.")
@@ -116,29 +149,76 @@ class RecordingService:
         capture_sr = self._capture_sr
         self._capture = None
 
+        # Close the streaming WAV file
         with self._chunks_lock:
-            chunks_snapshot = list(self._audio_chunks)
-            self._audio_chunks = []
+            if self._wav_writer is not None:
+                self._wav_writer.close()
+                self._wav_writer = None
 
-        if self._session and chunks_snapshot:
+        if self._session and self._chunk_count > 0 and self._wav_temp_path:
             try:
-                audio = np.concatenate(chunks_snapshot, axis=0)
-                if audio.ndim == 2:
-                    audio = audio.mean(axis=1)
-                audio = _resample(audio, capture_sr)
+                # Read mic recording and resample to TARGET_SR
+                mic_audio, _ = sf.read(self._wav_temp_path, dtype="float32")
+                if mic_audio.ndim == 2:
+                    mic_audio = mic_audio.mean(axis=1)
+                mic_audio = _resample(mic_audio, capture_sr)
+
+                # Mix in loopback audio if available
+                loopback_path = getattr(self, '_loopback_temp_path', None)
+                if loopback_path and Path(loopback_path).exists():
+                    try:
+                        lb_audio, lb_sr = sf.read(loopback_path, dtype="float32")
+                        if lb_audio.ndim == 2:
+                            lb_audio = lb_audio.mean(axis=1)
+                        if len(lb_audio) > 0:
+                            lb_audio = _resample(lb_audio, lb_sr)
+                            # Right-align loopback (it starts later due to
+                            # WASAPI blocking until audio plays)
+                            if len(lb_audio) < len(mic_audio):
+                                padded = np.zeros(len(mic_audio), dtype=np.float32)
+                                padded[len(mic_audio) - len(lb_audio):] = lb_audio
+                                lb_audio = padded
+                            else:
+                                lb_audio = lb_audio[:len(mic_audio)]
+                            mixed = mic_audio + lb_audio
+                            # Normalize to prevent clipping
+                            peak = np.abs(mixed).max()
+                            if peak > 0.95:
+                                mixed = mixed * (0.95 / peak)
+                            mic_audio = mixed.astype(np.float32)
+                            logger.info(f"Mixed loopback audio ({len(lb_audio)/TARGET_SR:.1f}s) with mic")
+                        else:
+                            logger.warning("Loopback file was empty — no system audio captured")
+                    except Exception as e:
+                        logger.warning(f"Could not mix loopback audio: {e}")
+                    finally:
+                        try:
+                            Path(loopback_path).unlink()
+                        except OSError:
+                            pass
+
                 path = self._build_audio_path(self._session.session_id)
-                save_wav(path, audio, TARGET_SR)
+                save_wav(path, mic_audio, TARGET_SR)
                 self._session.audio_path = path
                 self._session.ended_at = datetime.now()
+
+                # Remove the mic temp file
+                try:
+                    Path(self._wav_temp_path).unlink()
+                except OSError:
+                    pass
+
                 self._on_status("Recording saved. Ready to process.")
-                logger.info(f"Audio saved to {path} ({len(audio)/TARGET_SR:.1f}s)")
+                logger.info(f"Audio saved to {path} ({len(mic_audio)/TARGET_SR:.1f}s)")
             except Exception as e:
                 logger.error(f"Failed to save audio: {e}")
                 self._on_status(f"Error saving audio: {e}")
-        elif self._session and not chunks_snapshot:
+        elif self._session and self._chunk_count == 0:
             logger.warning("Recording stopped with no audio chunks captured.")
             self._on_status("No audio was captured. Try again.")
 
+        self._wav_temp_path = None
+        self._stop_session_log()
         return self._session
 
     async def process_session(self) -> Session:
@@ -176,9 +256,31 @@ class RecordingService:
         if not self._recording:
             return
         with self._chunks_lock:
-            if len(self._audio_chunks) >= MAX_CHUNKS:
-                self._audio_chunks.pop(0)
-            self._audio_chunks.append(chunk)
+            if self._wav_writer is not None:
+                mono = chunk.mean(axis=0) if chunk.ndim > 1 else chunk
+                self._wav_writer.write(mono)
+                self._chunk_count += 1
+
+    def _start_session_log(self, session_id: str) -> None:
+        try:
+            recordings_dir = Path(self._settings.recordings_dir)
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            log_path = recordings_dir / f"session_{session_id}.log"
+            handler = logging.FileHandler(str(log_path), encoding="utf-8")
+            handler.setLevel(logging.DEBUG)
+            handler.setFormatter(logging.Formatter(SESSION_LOG_FMT))
+            logging.getLogger().addHandler(handler)
+            self._session_log_handler = handler
+            logger.info(f"Session log started: {log_path}")
+        except Exception as e:
+            logger.warning(f"Could not create session log file: {e}")
+
+    def _stop_session_log(self) -> None:
+        if self._session_log_handler:
+            logger.info("Session log closed.")
+            logging.getLogger().removeHandler(self._session_log_handler)
+            self._session_log_handler.close()
+            self._session_log_handler = None
 
     def _build_audio_path(self, session_id: str) -> str:
         recordings_dir = Path(self._settings.recordings_dir)

@@ -53,3 +53,33 @@ class ExportService:
         path.write_text("\n".join(lines), encoding="utf-8")
         logger.info(f"Summary exported: {path}")
         return str(path)
+
+    def export_action_items(self, session: Session) -> str:
+        if not session.action_items:
+            raise ValueError("No action items to export.")
+        name = self._base_name(session)
+        path = self._dir / f"action_items_{name}.txt"
+        lines = []
+        if session.display_name:
+            lines.append(f"Meeting: {session.display_name}")
+            lines.append("=" * 60)
+            lines.append("")
+        lines.append(session.action_items)
+        path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info(f"Action items exported: {path}")
+        return str(path)
+
+    def export_requirements(self, session: Session) -> str:
+        if not session.requirements:
+            raise ValueError("No requirements to export.")
+        name = self._base_name(session)
+        path = self._dir / f"requirements_{name}.txt"
+        lines = []
+        if session.display_name:
+            lines.append(f"Meeting: {session.display_name}")
+            lines.append("=" * 60)
+            lines.append("")
+        lines.append(session.requirements)
+        path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info(f"Requirements exported: {path}")
+        return str(path)
