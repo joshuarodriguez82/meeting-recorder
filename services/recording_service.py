@@ -46,8 +46,8 @@ class RecordingService:
     def __init__(
         self,
         settings: Settings,
-        transcription_engine: TranscriptionEngine,
-        diarization_engine: DiarizationEngine,
+        transcription_engine: Optional[TranscriptionEngine] = None,
+        diarization_engine: Optional[DiarizationEngine] = None,
         on_status: Optional[Callable[[str], None]] = None,
     ):
         self._settings = settings
@@ -75,6 +75,19 @@ class RecordingService:
     def set_session(self, session: Session) -> None:
         """Allow an externally created session (e.g. loaded file) to be processed."""
         self._session = session
+
+    def set_engines(
+        self,
+        transcription_engine: TranscriptionEngine,
+        diarization_engine: DiarizationEngine,
+    ) -> None:
+        """Attach AI engines after deferred model loading."""
+        self._transcription = transcription_engine
+        self._diarization = diarization_engine
+
+    @property
+    def can_process(self) -> bool:
+        return self._transcription is not None and self._diarization is not None
 
     def start_recording(
         self,
@@ -224,6 +237,10 @@ class RecordingService:
     async def process_session(self) -> Session:
         if not self._session or not self._session.audio_path:
             raise RuntimeError("No recorded session to process.")
+        if not self.can_process:
+            raise RuntimeError(
+                "AI models not loaded. Add API keys in File > Settings "
+                "and restart the app to enable transcription and diarization.")
 
         self._on_status("__stage:transcribe:active__")
         raw_segments = await self._transcription.transcribe(self._session.audio_path)

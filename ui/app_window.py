@@ -57,19 +57,26 @@ class AppWindow(tk.Tk):
 
         self._transcription: Optional[TranscriptionEngine] = None
         self._diarization: Optional[DiarizationEngine] = None
-        self._summarizer    = Summarizer(settings.anthropic_api_key)
+        self._summarizer    = Summarizer(settings.anthropic_api_key) if settings.anthropic_api_key else None
         self._session_svc   = SessionService(settings.recordings_dir)
         self._export_svc    = ExportService(settings.recordings_dir)
-        self._recording_svc: Optional[RecordingService] = None
+
+        # Create recording service immediately — recording doesn't need AI models
+        self._recording_svc = RecordingService(
+            settings=settings,
+            on_status=self._thread_safe_status,
+        )
 
         self._build_window()
         self._build_layout()
 
-        # Load ML models in background so the window appears instantly
-        self._set_status("Loading models...")
-        self._rec_btn.config(state=tk.DISABLED)
-        self._load_btn.config(state=tk.DISABLED)
-        threading.Thread(target=self._load_models, daemon=True).start()
+        # Recording is available immediately
+        self._set_status("Ready to record")
+        # Load ML models in background (for processing step)
+        if self._settings.is_configured:
+            threading.Thread(target=self._load_models, daemon=True).start()
+        else:
+            self._on_not_configured()
 
     def _build_window(self) -> None:
         self.title("Meeting Recorder")
@@ -288,21 +295,16 @@ class AppWindow(tk.Tk):
     # ------------------------------------------------------------------ #
 
     def _load_models(self) -> None:
-        # If API keys aren't set, skip model loading and prompt user
-        if not self._settings.is_configured:
-            self.after(0, self._on_not_configured)
-            return
         try:
             logger.info("Loading transcription engine...")
             self._transcription = TranscriptionEngine(self._settings.whisper_model)
             logger.info("Loading diarization engine...")
             self._diarization = DiarizationEngine(
                 self._settings.hf_token, self._settings.max_speakers)
-            self._recording_svc = RecordingService(
-                settings=self._settings,
+            # Attach engines to the existing recording service
+            self._recording_svc.set_engines(
                 transcription_engine=self._transcription,
                 diarization_engine=self._diarization,
-                on_status=self._thread_safe_status,
             )
             self.after(0, self._on_models_ready)
         except Exception as e:
@@ -311,9 +313,7 @@ class AppWindow(tk.Tk):
             self.after(0, lambda: self._on_model_load_failed(err_msg))
 
     def _on_model_load_failed(self, err_msg: str) -> None:
-        self._set_status("Model load failed — see dialog")
-        # Enable Load File so user can at least load pre-recorded audio
-        self._load_btn.config(state=tk.NORMAL)
+        self._set_status("Ready to record (processing unavailable)")
         hint = ""
         if "401" in err_msg or "403" in err_msg or "token" in err_msg.lower():
             hint = (
@@ -332,15 +332,8 @@ class AppWindow(tk.Tk):
             f"Could not load AI models:\n\n{err_msg}{hint}")
 
     def _on_not_configured(self) -> None:
-        self._set_status("API keys required — File > Settings")
-        messagebox.showinfo(
-            "Setup Required",
-            "Welcome to Meeting Recorder!\n\n"
-            "Before you can record, please add your API keys:\n"
-            "  • Anthropic API key (console.anthropic.com)\n"
-            "  • HuggingFace token (huggingface.co/settings/tokens)\n\n"
-            "Open File > Settings to add them.\n"
-            "The app will restart after saving.")
+        self._set_status("Ready to record (API keys needed for processing)")
+        logger.info("No API keys — recording enabled, processing disabled.")
 
     def _on_models_ready(self) -> None:
         self._models_ready = True
@@ -403,7 +396,7 @@ class AppWindow(tk.Tk):
     # ------------------------------------------------------------------ #
 
     def _toggle_recording(self) -> None:
-        if not self._models_ready or not self._recording_svc:
+        if not self._recording_svc:
             return
         if not self._recording_svc.is_recording:
             self._active_meeting = None
@@ -627,6 +620,11 @@ class AppWindow(tk.Tk):
     # ------------------------------------------------------------------ #
 
     def _summarize(self) -> None:
+        if not self._summarizer:
+            messagebox.showwarning("API Key Required",
+                "Anthropic API key required for summarization.\n"
+                "Add it in File > Settings.")
+            return
         if not self._session or not self._session.segments:
             messagebox.showwarning("No Transcript", "Please process a recording first.")
             return
@@ -667,6 +665,10 @@ class AppWindow(tk.Tk):
         _run_async_in_thread(_coro, _on_success, _on_error)
 
     def _extract_action_items(self) -> None:
+        if not self._summarizer:
+            messagebox.showwarning("API Key Required",
+                "Anthropic API key required. Add it in File > Settings.")
+            return
         if not self._session or not self._session.segments:
             messagebox.showwarning("No Transcript", "Please process a recording first.")
             return
@@ -703,6 +705,10 @@ class AppWindow(tk.Tk):
         _run_async_in_thread(_coro, _on_success, _on_error)
 
     def _extract_requirements(self) -> None:
+        if not self._summarizer:
+            messagebox.showwarning("API Key Required",
+                "Anthropic API key required. Add it in File > Settings.")
+            return
         if not self._session or not self._session.segments:
             messagebox.showwarning("No Transcript", "Please process a recording first.")
             return
