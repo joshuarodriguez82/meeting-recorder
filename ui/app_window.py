@@ -307,7 +307,29 @@ class AppWindow(tk.Tk):
             self.after(0, self._on_models_ready)
         except Exception as e:
             logger.error(f"Failed to load models: {e}")
-            self.after(0, lambda: self._set_status(f"Model load failed: {e}"))
+            err_msg = str(e)
+            self.after(0, lambda: self._on_model_load_failed(err_msg))
+
+    def _on_model_load_failed(self, err_msg: str) -> None:
+        self._set_status("Model load failed — see dialog")
+        # Enable Load File so user can at least load pre-recorded audio
+        self._load_btn.config(state=tk.NORMAL)
+        hint = ""
+        if "401" in err_msg or "403" in err_msg or "token" in err_msg.lower():
+            hint = (
+                "\n\nThis usually means:\n"
+                "  • HuggingFace token is invalid or missing\n"
+                "  • You haven't accepted the pyannote model terms:\n"
+                "    - huggingface.co/pyannote/speaker-diarization-3.1\n"
+                "    - huggingface.co/pyannote/segmentation-3.0\n\n"
+                "Fix via File > Settings, then restart the app.")
+        elif "cuda" in err_msg.lower() or "gpu" in err_msg.lower():
+            hint = (
+                "\n\nGPU/CUDA issue. The app needs an NVIDIA GPU with "
+                "CUDA support.\nCheck that nvidia-smi works in a terminal.")
+        messagebox.showerror(
+            "Model Load Failed",
+            f"Could not load AI models:\n\n{err_msg}{hint}")
 
     def _on_not_configured(self) -> None:
         self._set_status("API keys required — File > Settings")
@@ -944,6 +966,6 @@ class AppWindow(tk.Tk):
             "Powered by Whisper, Pyannote, and Claude.")
 
     def _on_close(self) -> None:
-        if self._recording_svc.is_recording:
+        if self._recording_svc and self._recording_svc.is_recording:
             self._recording_svc.stop_recording()
         self.destroy()
