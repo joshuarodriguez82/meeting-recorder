@@ -29,12 +29,7 @@ logger = get_logger(__name__)
 
 
 def main() -> None:
-    try:
-        settings = Settings.from_env()
-    except EnvironmentError as e:
-        print(f"\n[CONFIG ERROR]\n{e}\n")
-        sys.exit(1)
-
+    settings = Settings.from_env()
     logger.info("Starting Meeting Recorder...")
     app = AppWindow(settings)
     try:

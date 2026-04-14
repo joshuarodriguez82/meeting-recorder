@@ -461,7 +461,8 @@ def create_vbs(install_dir: str) -> str:
 def create_shortcut(install_dir: str, vbs_path: str) -> str:
     """
     Create a .lnk Desktop shortcut pointing to the VBScript launcher.
-    Logs all PowerShell output so failures are visible in the install log.
+    Uses a temp .ps1 file (not inline -Command) for reliability —
+    inline PowerShell breaks on nested quotes and backslash paths.
     """
     desktop  = get_desktop_path()
     lnk_path = desktop / f"{APP_NAME}.lnk"
@@ -471,42 +472,53 @@ def create_shortcut(install_dir: str, vbs_path: str) -> str:
     _log(f"  → VBS target: {vbs_path}")
     _log(f"  → Desktop resolved to: {desktop}")
 
-    icon_line = (f'$sc.IconLocation = "{ico_path}"; '
+    icon_line = (f'$sc.IconLocation = "{ico_path}"\n'
                  if ico_path.exists() else "")
 
-    ps_script = (
-        f'$ws = New-Object -ComObject WScript.Shell; '
-        f'$sc = $ws.CreateShortcut("{lnk_path}"); '
-        f'$sc.TargetPath = "wscript.exe"; '
-        f'$sc.Arguments = \'"{vbs_path}"\'; '
-        f'$sc.WorkingDirectory = "{install_dir}"; '
-        f'$sc.Description = "Launch Meeting Recorder"; '
+    ps_content = (
+        f'$ws = New-Object -ComObject WScript.Shell\n'
+        f'$sc = $ws.CreateShortcut("{lnk_path}")\n'
+        f'$sc.TargetPath = "wscript.exe"\n'
+        f'$sc.Arguments = \'"{vbs_path}"\'\n'
+        f'$sc.WorkingDirectory = "{install_dir}"\n'
+        f'$sc.Description = "Launch Meeting Recorder"\n'
         f'{icon_line}'
-        f'$sc.Save(); '
-        f'Write-Output "SHORTCUT_OK: {lnk_path}"'
+        f'$sc.Save()\n'
+        f'Write-Output "SHORTCUT_OK: {lnk_path}"\n'
     )
 
-    r = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-         "-Command", ps_script],
-        capture_output=True, text=True, timeout=15
-    )
-    _log(f"PowerShell stdout: {r.stdout.strip()}")
-    if r.stderr.strip():
-        _log(f"PowerShell stderr: {r.stderr.strip()}")
+    ps_path = Path(install_dir) / "_make_shortcut.ps1"
+    ps_path.write_text(ps_content, encoding="utf-8")
+    _log(f"  PowerShell script written: {ps_path}")
 
-    if "SHORTCUT_OK" in r.stdout:
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", str(ps_path)],
+            capture_output=True, text=True, timeout=20
+        )
+        _log(f"PowerShell stdout: {r.stdout.strip()}")
+        if r.stderr.strip():
+            _log(f"PowerShell stderr: {r.stderr.strip()}")
+    finally:
+        try:
+            ps_path.unlink()
+        except OSError:
+            pass
+
+    if "SHORTCUT_OK" in r.stdout and lnk_path.exists():
         _log("  ✓ Desktop shortcut created successfully")
     else:
-        _log(f"  ⚠ Shortcut may not have been created — PS exit code: {r.returncode}")
-        # Attempt fallback: write a plain .bat file to Desktop instead
+        _log(f"  ⚠ Shortcut not created — PS exit code: {r.returncode}")
+        # Attempt fallback: write a .bat file to Desktop instead
         _log("  Attempting .bat fallback shortcut…")
         try:
             bat_path = desktop / f"{APP_NAME}.bat"
-            pyexe    = str(Path(install_dir) / ".venv" / "Scripts" / "python.exe")
+            pyexe    = str(Path(install_dir) / ".venv" / "Scripts" / "pythonw.exe")
             bat_path.write_text(
                 f'@echo off\n'
-                f'"{pyexe}" "{install_dir}\\main.py"\n',
+                f'cd /d "{install_dir}"\n'
+                f'start "" "{pyexe}" "{install_dir}\\main.py"\n',
                 encoding="utf-8")
             _log(f"  ✓ .bat fallback written: {bat_path}")
         except Exception as e2:

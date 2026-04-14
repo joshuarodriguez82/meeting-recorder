@@ -288,6 +288,10 @@ class AppWindow(tk.Tk):
     # ------------------------------------------------------------------ #
 
     def _load_models(self) -> None:
+        # If API keys aren't set, skip model loading and prompt user
+        if not self._settings.is_configured:
+            self.after(0, self._on_not_configured)
+            return
         try:
             logger.info("Loading transcription engine...")
             self._transcription = TranscriptionEngine(self._settings.whisper_model)
@@ -304,6 +308,17 @@ class AppWindow(tk.Tk):
         except Exception as e:
             logger.error(f"Failed to load models: {e}")
             self.after(0, lambda: self._set_status(f"Model load failed: {e}"))
+
+    def _on_not_configured(self) -> None:
+        self._set_status("API keys required — File > Settings")
+        messagebox.showinfo(
+            "Setup Required",
+            "Welcome to Meeting Recorder!\n\n"
+            "Before you can record, please add your API keys:\n"
+            "  • Anthropic API key (console.anthropic.com)\n"
+            "  • HuggingFace token (huggingface.co/settings/tokens)\n\n"
+            "Open File > Settings to add them.\n"
+            "The app will restart after saving.")
 
     def _on_models_ready(self) -> None:
         self._models_ready = True
