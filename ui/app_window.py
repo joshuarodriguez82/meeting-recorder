@@ -57,7 +57,7 @@ class AppWindow(tk.Tk):
 
         self._transcription: Optional[TranscriptionEngine] = None
         self._diarization: Optional[DiarizationEngine] = None
-        self._summarizer    = Summarizer(settings.anthropic_api_key) if settings.anthropic_api_key else None
+        self._summarizer    = Summarizer(settings.anthropic_api_key, model=settings.claude_model) if settings.anthropic_api_key else None
         self._session_svc   = SessionService(settings.recordings_dir)
         self._export_svc    = ExportService(settings.recordings_dir)
 

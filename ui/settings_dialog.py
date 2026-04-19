@@ -122,6 +122,23 @@ class SettingsDialog(tk.Toplevel):
                              highlightbackground=styles.BORDER, highlightthickness=1)
         spinbox.pack(side=tk.LEFT)
 
+        claude_row = tk.Frame(outer, bg=styles.BG_DARK)
+        claude_row.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(claude_row, text="Claude Model", bg=styles.BG_DARK,
+                 fg=styles.TEXT_MUTED, font=styles.FONT_SMALL,
+                 width=16, anchor="w").pack(side=tk.LEFT)
+        self._claude_var = tk.StringVar(value=self._settings.claude_model)
+        claude_combo = ttk.Combobox(
+            claude_row, textvariable=self._claude_var,
+            values=["claude-haiku-4-5", "claude-sonnet-4-5",
+                    "claude-3-5-haiku-latest"],
+            state="readonly", width=28)
+        claude_combo.pack(side=tk.LEFT)
+        tk.Label(outer, text="Haiku 4.5 is ~4x cheaper than Sonnet. "
+                 "Good for summaries.",
+                 bg=styles.BG_DARK, fg=styles.TEXT_HINT,
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=(120, 0))
+
         # Paths section
         self._section(outer, "Storage")
 
@@ -200,6 +217,7 @@ class SettingsDialog(tk.Toplevel):
                 max_speakers=self._speakers_var.get(),
                 recordings_dir=self._dir_var.get().strip() or "recordings",
                 email_to=self._email_var.get().strip(),
+                claude_model=self._claude_var.get(),
             )
             # Update device selections
             if self._device_panel:

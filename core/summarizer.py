@@ -143,10 +143,14 @@ MEETING_TEMPLATES = {
 }
 
 
+DEFAULT_MODEL = "claude-haiku-4-5"
+
+
 class Summarizer:
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str = DEFAULT_MODEL):
         self._client = AsyncAnthropic(api_key=api_key)
+        self._model = model or DEFAULT_MODEL
 
     async def summarize(self, transcript: str, template: str = "General") -> str:
         prompt = MEETING_TEMPLATES.get(template, MEETING_TEMPLATES["General"])
@@ -154,7 +158,7 @@ class Summarizer:
         try:
             message = await asyncio.wait_for(
                 self._client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model=self._model,
                     max_tokens=1024,
                     messages=[{
                         "role": "user",
@@ -174,7 +178,7 @@ class Summarizer:
         try:
             message = await asyncio.wait_for(
                 self._client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model=self._model,
                     max_tokens=1024,
                     messages=[{
                         "role": "user",
@@ -207,7 +211,7 @@ class Summarizer:
         try:
             message = await asyncio.wait_for(
                 self._client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model=self._model,
                     max_tokens=2048,
                     messages=[{
                         "role": "user",
@@ -243,7 +247,7 @@ class Summarizer:
         try:
             message = await asyncio.wait_for(
                 self._client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model=self._model,
                     max_tokens=512,
                     messages=[{
                         "role": "user",

@@ -23,6 +23,7 @@ class Settings:
     max_speakers: int
     recordings_dir: str
     email_to: str
+    claude_model: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -38,6 +39,7 @@ class Settings:
             max_speakers=int(os.getenv("MAX_SPEAKERS", "10")),
             recordings_dir=os.getenv("RECORDINGS_DIR", "recordings"),
             email_to=os.getenv("EMAIL_TO", ""),
+            claude_model=os.getenv("CLAUDE_MODEL", "claude-haiku-4-5"),
         )
 
     @property
@@ -53,6 +55,7 @@ class Settings:
         max_speakers: int,
         recordings_dir: str,
         email_to: str = "",
+        claude_model: str = "claude-haiku-4-5",
     ) -> None:
         """Write settings back to the .env file."""
         content = (
@@ -62,5 +65,6 @@ class Settings:
             f"MAX_SPEAKERS={max_speakers}\n"
             f"RECORDINGS_DIR={recordings_dir}\n"
             f"EMAIL_TO={email_to}\n"
+            f"CLAUDE_MODEL={claude_model}\n"
         )
         ENV_PATH.write_text(content, encoding="utf-8")
