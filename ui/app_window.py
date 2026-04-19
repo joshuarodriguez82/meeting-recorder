@@ -21,6 +21,7 @@ from services.calendar_monitor import CalendarMonitor
 from services.calendar_service import get_todays_meetings, is_outlook_available
 from services.export_service import ExportService
 from services.recording_service import RecordingService
+from services.retention_service import cleanup as run_retention_cleanup
 from services.session_service import SessionService
 from ui import styles
 from ui.calendar_panel import CalendarPanel
@@ -98,6 +99,31 @@ class AppWindow(tk.Tk):
                 notify_minutes_before=settings.notify_minutes_before,
             )
             self._calendar_monitor.start()
+
+        # Retention: run once on startup, then every 24 hours
+        if settings.retention_enabled:
+            # Delay 5 seconds so startup isn't slowed
+            self.after(5000, lambda: threading.Thread(
+                target=self._run_retention_cleanup, daemon=True).start())
+
+    def _run_retention_cleanup(self) -> None:
+        """Apply retention policy once, then reschedule for 24h."""
+        try:
+            stats = run_retention_cleanup(
+                self._settings.recordings_dir,
+                processed_days=self._settings.retention_processed_days,
+                unprocessed_days=self._settings.retention_unprocessed_days,
+            )
+            if stats["deleted_count"] > 0:
+                logger.info(
+                    f"Retention: deleted {stats['deleted_count']} files "
+                    f"({stats['bytes_freed']} bytes)")
+        except Exception as e:
+            logger.warning(f"Retention cleanup failed: {e}")
+        # Reschedule for 24 hours
+        ONE_DAY_MS = 24 * 60 * 60 * 1000
+        self.after(ONE_DAY_MS, lambda: threading.Thread(
+            target=self._run_retention_cleanup, daemon=True).start())
 
     def _build_window(self) -> None:
         self.title("Meeting Recorder")

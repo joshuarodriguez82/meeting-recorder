@@ -28,6 +28,9 @@ class Settings:
     auto_process_after_stop: bool
     launch_on_startup: bool
     auto_follow_up_email: bool
+    retention_enabled: bool
+    retention_processed_days: int
+    retention_unprocessed_days: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -48,6 +51,9 @@ class Settings:
             auto_process_after_stop=os.getenv("AUTO_PROCESS_AFTER_STOP", "false").lower() == "true",
             launch_on_startup=os.getenv("LAUNCH_ON_STARTUP", "false").lower() == "true",
             auto_follow_up_email=os.getenv("AUTO_FOLLOW_UP_EMAIL", "false").lower() == "true",
+            retention_enabled=os.getenv("RETENTION_ENABLED", "false").lower() == "true",
+            retention_processed_days=int(os.getenv("RETENTION_PROCESSED_DAYS", "7")),
+            retention_unprocessed_days=int(os.getenv("RETENTION_UNPROCESSED_DAYS", "30")),
         )
 
     @property
@@ -68,6 +74,9 @@ class Settings:
         auto_process_after_stop: bool = False,
         launch_on_startup: bool = False,
         auto_follow_up_email: bool = False,
+        retention_enabled: bool = False,
+        retention_processed_days: int = 7,
+        retention_unprocessed_days: int = 30,
     ) -> None:
         """Write settings back to the .env file."""
         content = (
@@ -82,5 +91,8 @@ class Settings:
             f"AUTO_PROCESS_AFTER_STOP={'true' if auto_process_after_stop else 'false'}\n"
             f"LAUNCH_ON_STARTUP={'true' if launch_on_startup else 'false'}\n"
             f"AUTO_FOLLOW_UP_EMAIL={'true' if auto_follow_up_email else 'false'}\n"
+            f"RETENTION_ENABLED={'true' if retention_enabled else 'false'}\n"
+            f"RETENTION_PROCESSED_DAYS={retention_processed_days}\n"
+            f"RETENTION_UNPROCESSED_DAYS={retention_unprocessed_days}\n"
         )
         ENV_PATH.write_text(content, encoding="utf-8")

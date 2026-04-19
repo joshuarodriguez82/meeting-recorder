@@ -28,6 +28,7 @@ INCLUDE = [
     "services/calendar_monitor.py",
     "services/export_service.py",
     "services/recording_service.py",
+    "services/retention_service.py",
     "services/session_service.py",
     "ui/__init__.py",
     "ui/app_window.py",

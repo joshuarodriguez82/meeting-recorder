@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from config.settings import Settings
 from core.audio_capture import list_input_devices, list_output_devices
+from services.retention_service import cleanup as run_cleanup, folder_stats, format_bytes
 from ui import styles
 
 
@@ -289,6 +290,86 @@ class SettingsDialog(tk.Toplevel):
                  bg=styles.BG_DARK, fg=styles.TEXT_HINT,
                  font=("Segoe UI", 9)).pack(anchor="w", padx=(28, 0))
 
+        # Retention section
+        self._section(outer, "Retention")
+
+        stats = folder_stats(self._settings.recordings_dir)
+        storage_text = (f"Current storage: {format_bytes(stats['total_bytes'])} "
+                         f"across {stats['session_count']} sessions "
+                         f"({stats['wav_count']} WAV files)")
+        self._storage_label = tk.Label(outer, text=storage_text,
+                                         bg=styles.BG_DARK, fg=styles.TEXT_MUTED,
+                                         font=styles.FONT_SMALL)
+        self._storage_label.pack(anchor="w", pady=(0, 6))
+
+        retention_row = tk.Frame(outer, bg=styles.BG_DARK)
+        retention_row.pack(fill=tk.X, pady=(0, 4))
+        self._retention_var = tk.BooleanVar(
+            value=self._settings.retention_enabled)
+        tk.Checkbutton(
+            retention_row, text="Enable automatic cleanup of old audio files",
+            variable=self._retention_var,
+            bg=styles.BG_DARK, fg=styles.TEXT_PRIMARY,
+            font=styles.FONT_BODY, activebackground=styles.BG_DARK,
+            activeforeground=styles.TEXT_PRIMARY,
+            selectcolor=styles.BG_INPUT, bd=0,
+            highlightthickness=0).pack(side=tk.LEFT, anchor="w")
+
+        proc_row = tk.Frame(outer, bg=styles.BG_DARK)
+        proc_row.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(proc_row, text="Processed audio", bg=styles.BG_DARK,
+                 fg=styles.TEXT_MUTED, font=styles.FONT_SMALL,
+                 width=16, anchor="w").pack(side=tk.LEFT, padx=(28, 0))
+        self._retention_proc_var = tk.IntVar(
+            value=self._settings.retention_processed_days)
+        tk.Spinbox(proc_row, from_=0, to=365,
+                    textvariable=self._retention_proc_var, width=5,
+                    bg=styles.BG_INPUT, fg=styles.TEXT_PRIMARY,
+                    font=styles.FONT_BODY, relief=tk.FLAT,
+                    highlightbackground=styles.BORDER,
+                    highlightthickness=1).pack(side=tk.LEFT)
+        tk.Label(proc_row, text="days  (0 = never; default 7)",
+                 bg=styles.BG_DARK, fg=styles.TEXT_HINT,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 0))
+
+        unproc_row = tk.Frame(outer, bg=styles.BG_DARK)
+        unproc_row.pack(fill=tk.X, pady=(4, 4))
+        tk.Label(unproc_row, text="Unprocessed audio", bg=styles.BG_DARK,
+                 fg=styles.TEXT_MUTED, font=styles.FONT_SMALL,
+                 width=16, anchor="w").pack(side=tk.LEFT, padx=(28, 0))
+        self._retention_unproc_var = tk.IntVar(
+            value=self._settings.retention_unprocessed_days)
+        tk.Spinbox(unproc_row, from_=0, to=365,
+                    textvariable=self._retention_unproc_var, width=5,
+                    bg=styles.BG_INPUT, fg=styles.TEXT_PRIMARY,
+                    font=styles.FONT_BODY, relief=tk.FLAT,
+                    highlightbackground=styles.BORDER,
+                    highlightthickness=1).pack(side=tk.LEFT)
+        tk.Label(unproc_row, text="days  (0 = never; default 30)",
+                 bg=styles.BG_DARK, fg=styles.TEXT_HINT,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 0))
+
+        tk.Label(outer,
+                 text="Only audio files are deleted. Transcripts, summaries, "
+                      "action items, decisions all stay forever.",
+                 bg=styles.BG_DARK, fg=styles.TEXT_HINT,
+                 font=("Segoe UI", 9),
+                 wraplength=520, justify="left").pack(
+                     anchor="w", padx=(28, 0), pady=(4, 6))
+
+        clean_row = tk.Frame(outer, bg=styles.BG_DARK)
+        clean_row.pack(fill=tk.X, pady=(0, 2))
+        tk.Button(clean_row, text="Clean up now",
+                  bg=styles.BG_PANEL, fg=styles.ACCENT,
+                  font=styles.FONT_BODY, relief=tk.FLAT,
+                  padx=14, pady=5, cursor="hand2",
+                  command=self._cleanup_now).pack(side=tk.LEFT, padx=(28, 0))
+        self._cleanup_result_label = tk.Label(clean_row, text="",
+                                                bg=styles.BG_DARK,
+                                                fg=styles.TEXT_HINT,
+                                                font=styles.FONT_SMALL)
+        self._cleanup_result_label.pack(side=tk.LEFT, padx=(10, 0))
+
         # Populate the pinned footer with Save/Cancel (always visible)
         tk.Button(self._footer, text="Save", bg=styles.ACCENT, fg="#ffffff",
                   font=styles.FONT_BODY, relief=tk.FLAT, padx=20, pady=6,
@@ -314,6 +395,47 @@ class SettingsDialog(tk.Toplevel):
                  font=styles.FONT_BODY, relief=tk.FLAT,
                  highlightbackground=styles.BORDER, highlightthickness=1
                  ).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+
+    def _cleanup_now(self):
+        """Run retention cleanup immediately with the current form values."""
+        proc = self._retention_proc_var.get()
+        unproc = self._retention_unproc_var.get()
+        if proc == 0 and unproc == 0:
+            messagebox.showinfo(
+                "Nothing to Clean",
+                "Both retention periods are 0 (never delete). "
+                "Set at least one to a positive value.",
+                parent=self)
+            return
+        if not messagebox.askyesno(
+                "Clean Up Audio Files",
+                f"This will delete WAV audio files based on:\n\n"
+                f"  • Processed audio older than {proc} days "
+                f"({'never' if proc == 0 else ''})\n"
+                f"  • Unprocessed audio older than {unproc} days "
+                f"({'never' if unproc == 0 else ''})\n\n"
+                "Transcripts and summaries will NOT be deleted. "
+                "Continue?",
+                parent=self):
+            return
+        try:
+            stats = run_cleanup(
+                self._settings.recordings_dir,
+                processed_days=proc,
+                unprocessed_days=unproc,
+            )
+            self._cleanup_result_label.config(
+                text=f"Deleted {stats['deleted_count']} files, "
+                     f"freed {format_bytes(stats['bytes_freed'])}",
+                fg=styles.SUCCESS)
+            # Refresh storage label
+            s = folder_stats(self._settings.recordings_dir)
+            self._storage_label.config(
+                text=f"Current storage: {format_bytes(s['total_bytes'])} "
+                     f"across {s['session_count']} sessions "
+                     f"({s['wav_count']} WAV files)")
+        except Exception as e:
+            messagebox.showerror("Cleanup Failed", str(e), parent=self)
 
     def _browse_dir(self):
         path = filedialog.askdirectory(initialdir=self._dir_var.get())
@@ -341,6 +463,9 @@ class SettingsDialog(tk.Toplevel):
                 auto_process_after_stop=self._auto_process_var.get(),
                 launch_on_startup=self._startup_var.get(),
                 auto_follow_up_email=self._auto_follow_var.get(),
+                retention_enabled=self._retention_var.get(),
+                retention_processed_days=self._retention_proc_var.get(),
+                retention_unprocessed_days=self._retention_unproc_var.get(),
             )
             # Sync startup shortcut to match setting
             try:
