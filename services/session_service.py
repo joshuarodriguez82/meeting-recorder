@@ -3,11 +3,12 @@ Persists and loads session data as JSON.
 Uses atomic write (temp file + rename) to prevent corrupt JSON on crash.
 """
 
+import datetime
 import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from models.session import Session
 from utils.logger import get_logger
@@ -68,18 +69,7 @@ class SessionService:
         return str(final_path)
 
     def load(self, session_id: str) -> Optional[dict]:
-        """
-        Load a session JSON by ID.
-
-        Args:
-            session_id: The session identifier.
-
-        Returns:
-            Parsed session dict, or None if not found.
-
-        Raises:
-            ValueError: If the file exists but contains invalid JSON.
-        """
+        """Load a session JSON by ID. Returns raw dict."""
         path = self._recordings_dir / f"session_{session_id}.json"
         if not path.exists():
             logger.warning(f"Session file not found: {path}")
@@ -89,3 +79,70 @@ class SessionService:
                 return json.load(f)
         except json.JSONDecodeError as e:
             raise ValueError(f"Corrupt session file {path}: {e}") from e
+
+    def load_full(self, session_id: str) -> Optional[Session]:
+        """Load a session and rebuild the full Session object."""
+        data = self.load(session_id)
+        if data is None:
+            return None
+        return Session.from_dict(data)
+
+    def list_sessions(self) -> List[dict]:
+        """
+        Scan recordings dir for all session_*.json files.
+        Returns a list of summaries sorted newest first.
+        """
+        results: List[dict] = []
+        for path in self._recordings_dir.glob("session_*.json"):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Skipping unreadable session {path.name}: {e}")
+                continue
+
+            session_id = data.get("session_id") or path.stem.replace("session_", "")
+            audio_path = data.get("audio_path")
+            audio_exists = bool(audio_path) and Path(audio_path).exists()
+
+            # Duration from started/ended_at
+            duration_s = 0
+            try:
+                started = data.get("started_at")
+                ended = data.get("ended_at")
+                if started and ended:
+                    s = datetime.datetime.fromisoformat(started)
+                    e = datetime.datetime.fromisoformat(ended)
+                    duration_s = max(0, int((e - s).total_seconds()))
+            except Exception:
+                pass
+
+            results.append({
+                "session_id": session_id,
+                "display_name": data.get("display_name") or f"Session {session_id}",
+                "started_at": data.get("started_at"),
+                "ended_at": data.get("ended_at"),
+                "duration_s": duration_s,
+                "audio_path": audio_path,
+                "audio_exists": audio_exists,
+                "has_transcript": bool(data.get("segments")),
+                "has_summary": bool(data.get("summary")),
+                "has_action_items": bool(data.get("action_items")),
+                "has_requirements": bool(data.get("requirements")),
+                "json_path": str(path),
+            })
+
+        # Sort newest first
+        results.sort(key=lambda r: r.get("started_at") or "", reverse=True)
+        return results
+
+    def delete(self, session_id: str) -> None:
+        """Delete session JSON, WAV, and session log if they exist."""
+        for suffix in (".json", ".wav", ".log"):
+            p = self._recordings_dir / f"session_{session_id}{suffix}"
+            if p.exists():
+                try:
+                    p.unlink()
+                    logger.info(f"Deleted {p.name}")
+                except OSError as e:
+                    logger.warning(f"Could not delete {p}: {e}")

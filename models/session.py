@@ -56,6 +56,48 @@ class Session:
             "template": self.template,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Session":
+        """Reconstruct a Session from its JSON dict."""
+        session = cls(session_id=data.get("session_id", ""))
+        session.display_name = data.get("display_name", "") or ""
+        started = data.get("started_at")
+        ended = data.get("ended_at")
+        if started:
+            try:
+                session.started_at = datetime.datetime.fromisoformat(started)
+            except ValueError:
+                pass
+        if ended:
+            try:
+                session.ended_at = datetime.datetime.fromisoformat(ended)
+            except ValueError:
+                pass
+        session.audio_path = data.get("audio_path")
+        session.summary = data.get("summary")
+        session.action_items = data.get("action_items")
+        session.requirements = data.get("requirements")
+        session.template = data.get("template", "General") or "General"
+
+        # Rebuild speakers
+        speakers_data = data.get("speakers") or {}
+        for speaker_id, sdata in speakers_data.items():
+            sp = Speaker(
+                speaker_id=sdata.get("speaker_id", speaker_id),
+                display_name=sdata.get("display_name", "") or "",
+            )
+            session.speakers[speaker_id] = sp
+
+        # Rebuild segments
+        for seg_data in data.get("segments") or []:
+            session.segments.append(Segment(
+                speaker_id=seg_data.get("speaker_id", "SPEAKER_UNKNOWN"),
+                start=float(seg_data.get("start", 0.0)),
+                end=float(seg_data.get("end", 0.0)),
+                text=seg_data.get("text", "") or "",
+            ))
+        return session
+
 
 def _fmt_time(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)

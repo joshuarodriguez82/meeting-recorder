@@ -17,11 +17,15 @@ from core.diarization import DiarizationEngine
 from core.summarizer import Summarizer, MEETING_TEMPLATES
 from core.transcription import TranscriptionEngine
 from models.session import Session
+from services.calendar_monitor import CalendarMonitor
+from services.calendar_service import get_todays_meetings, is_outlook_available
 from services.export_service import ExportService
 from services.recording_service import RecordingService
 from services.session_service import SessionService
 from ui import styles
+from ui.calendar_panel import CalendarPanel
 from ui.device_panel import DevicePanel
+from ui.session_browser import SessionBrowser
 from ui.settings_dialog import SettingsDialog
 from ui.speaker_panel import SpeakerPanel
 from ui.transcript_panel import TranscriptPanel
@@ -78,6 +82,16 @@ class AppWindow(tk.Tk):
         else:
             self._on_not_configured()
 
+        # Load calendar + start monitor (both fail gracefully if no Outlook)
+        self._calendar_monitor: Optional[CalendarMonitor] = None
+        threading.Thread(target=self._load_calendar, daemon=True).start()
+        if settings.notify_minutes_before > 0:
+            self._calendar_monitor = CalendarMonitor(
+                on_upcoming=lambda m: self.after(0, self._on_meeting_upcoming, m),
+                notify_minutes_before=settings.notify_minutes_before,
+            )
+            self._calendar_monitor.start()
+
     def _build_window(self) -> None:
         self.title("Meeting Recorder")
         self.geometry("920x820")
@@ -103,6 +117,14 @@ class AppWindow(tk.Tk):
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
+
+        sessions_menu = tk.Menu(menubar, tearoff=0, bg=styles.BG_PANEL,
+                                 fg=styles.TEXT_PRIMARY,
+                                 activebackground=styles.ACCENT_BG,
+                                 activeforeground=styles.ACCENT)
+        sessions_menu.add_command(label="Session History...",
+                                   command=self._open_session_history)
+        menubar.add_cascade(label="Sessions", menu=sessions_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0, bg=styles.BG_PANEL,
                             fg=styles.TEXT_PRIMARY,
@@ -253,6 +275,37 @@ class AppWindow(tk.Tk):
         self._folder_btn = self._pill_button(
             row3, "📁  Recordings", styles.BG_INPUT, self._open_recordings, outline=True)
         self._folder_btn.pack(side=tk.LEFT)
+
+        # ── Calendar card (collapsible) ───────────────────────────────
+        cal_card = tk.Frame(outer, bg=styles.BG_PANEL,
+                             highlightbackground=styles.BORDER,
+                             highlightthickness=1)
+        cal_card.pack(fill=tk.X, pady=(0, styles.PAD))
+
+        cal_header = tk.Frame(cal_card, bg=styles.BG_PANEL)
+        cal_header.pack(fill=tk.X, padx=14, pady=(8, 0))
+        tk.Label(cal_header, text="TODAY'S MEETINGS",
+                 bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
+                 font=styles.FONT_SMALL).pack(side=tk.LEFT)
+        tk.Button(cal_header, text="Refresh",
+                  bg=styles.BG_PANEL, fg=styles.ACCENT,
+                  font=styles.FONT_SMALL, relief=tk.FLAT,
+                  cursor="hand2", bd=0,
+                  command=self._refresh_calendar).pack(side=tk.RIGHT)
+        self._cal_toggle_var = tk.StringVar(value="Hide")
+        self._cal_toggle = tk.Button(
+            cal_header, textvariable=self._cal_toggle_var,
+            bg=styles.BG_PANEL, fg=styles.ACCENT, font=styles.FONT_SMALL,
+            relief=tk.FLAT, cursor="hand2", bd=0,
+            command=self._toggle_calendar)
+        self._cal_toggle.pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._cal_body = tk.Frame(cal_card, bg=styles.BG_PANEL)
+        self._cal_body.pack(fill=tk.X, padx=8, pady=(0, 8))
+        self._cal_expanded = True
+        self._calendar_panel = CalendarPanel(
+            self._cal_body, on_record=self._start_from_meeting)
+        self._calendar_panel.pack(fill=tk.X)
 
         # ── Speaker card (collapsible) ────────────────────────────────
         speaker_card = tk.Frame(outer, bg=styles.BG_PANEL,
@@ -956,6 +1009,200 @@ class AppWindow(tk.Tk):
     def _open_settings(self) -> None:
         SettingsDialog(self, self._settings, device_panel=self._device_panel)
 
+    # ------------------------------------------------------------------ #
+    # Calendar
+    # ------------------------------------------------------------------ #
+
+    def _load_calendar(self) -> None:
+        """Background: fetch today's Outlook meetings."""
+        try:
+            meetings = get_todays_meetings()
+        except Exception as e:
+            logger.warning(f"Calendar load failed: {e}")
+            meetings = []
+        self.after(0, lambda: self._calendar_panel.load(meetings))
+
+    def _refresh_calendar(self) -> None:
+        self._calendar_panel.load([])  # show loading state
+        tk.Label(self._calendar_panel, text="Refreshing...",
+                 bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
+                 font=styles.FONT_SMALL).pack(pady=8)
+        threading.Thread(target=self._load_calendar, daemon=True).start()
+
+    def _toggle_calendar(self) -> None:
+        if self._cal_expanded:
+            self._cal_body.pack_forget()
+            self._cal_toggle_var.set("Show")
+            self._cal_expanded = False
+        else:
+            self._cal_body.pack(fill=tk.X, padx=8, pady=(0, 8))
+            self._cal_toggle_var.set("Hide")
+            self._cal_expanded = True
+
+    def _start_from_meeting(self, meeting: dict) -> None:
+        """Start recording with meeting name pre-filled."""
+        if not self._recording_svc:
+            return
+        if self._recording_svc.is_recording:
+            messagebox.showinfo("Already Recording",
+                                "A recording is already in progress.")
+            return
+        self._meeting_name_var.set(meeting["subject"])
+        self._toggle_recording()
+
+    def _on_meeting_upcoming(self, meeting: dict) -> None:
+        """Popup notification shown when a meeting is about to start."""
+        popup = tk.Toplevel(self)
+        popup.title("Meeting Starting Soon")
+        popup.configure(bg=styles.BG_PANEL)
+        popup.transient(self)
+        popup.resizable(False, False)
+        # Position top-right of screen
+        popup.update_idletasks()
+        sw = self.winfo_screenwidth()
+        popup.geometry(f"380x160+{sw - 400}+60")
+
+        inner = tk.Frame(popup, bg=styles.BG_PANEL,
+                         highlightbackground=styles.ACCENT,
+                         highlightthickness=2)
+        inner.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(inner, text="📅  Meeting Starting Soon",
+                 bg=styles.BG_PANEL, fg=styles.ACCENT,
+                 font=styles.FONT_TITLE).pack(anchor="w", padx=14, pady=(10, 4))
+
+        subject = meeting["subject"]
+        if len(subject) > 42:
+            subject = subject[:40] + "…"
+        tk.Label(inner, text=subject, bg=styles.BG_PANEL,
+                 fg=styles.TEXT_PRIMARY, font=styles.FONT_BODY,
+                 anchor="w", justify="left", wraplength=340).pack(
+                     anchor="w", padx=14)
+
+        start_str = meeting["start"].strftime("%H:%M")
+        tk.Label(inner, text=f"Starts at {start_str}",
+                 bg=styles.BG_PANEL, fg=styles.TEXT_MUTED,
+                 font=styles.FONT_SMALL).pack(anchor="w", padx=14, pady=(2, 10))
+
+        btn_row = tk.Frame(inner, bg=styles.BG_PANEL)
+        btn_row.pack(fill=tk.X, padx=14, pady=(0, 10))
+
+        def on_start():
+            popup.destroy()
+            self._start_from_meeting(meeting)
+
+        def on_dismiss():
+            if self._calendar_monitor:
+                self._calendar_monitor.dismiss(meeting)
+            popup.destroy()
+
+        tk.Button(btn_row, text="Start Recording", bg=styles.ACCENT,
+                  fg="#ffffff", font=styles.FONT_BODY, relief=tk.FLAT,
+                  padx=16, pady=6, cursor="hand2",
+                  command=on_start).pack(side=tk.RIGHT)
+        tk.Button(btn_row, text="Dismiss", bg=styles.BG_INPUT,
+                  fg=styles.TEXT_MUTED, font=styles.FONT_BODY,
+                  relief=tk.FLAT, padx=16, pady=6, cursor="hand2",
+                  command=on_dismiss).pack(side=tk.RIGHT, padx=(0, 6))
+
+        # Auto-dismiss after 60 seconds
+        popup.after(60000, lambda: popup.winfo_exists() and popup.destroy())
+
+    # ------------------------------------------------------------------ #
+    # Session history
+    # ------------------------------------------------------------------ #
+
+    def _open_session_history(self) -> None:
+        SessionBrowser(
+            self, self._session_svc,
+            on_open=self._load_session_by_id,
+            on_bulk_process=self._bulk_process,
+            recordings_dir=self._settings.recordings_dir,
+        )
+
+    def _load_session_by_id(self, session_id: str) -> None:
+        try:
+            session = self._session_svc.load_full(session_id)
+        except Exception as e:
+            messagebox.showerror("Load Error", str(e))
+            return
+        if not session:
+            messagebox.showwarning("Not Found",
+                                   f"Session {session_id} not found.")
+            return
+        self._session = session
+        if self._recording_svc:
+            self._recording_svc.set_session(session)
+        self._meeting_name_var.set(session.display_name or "")
+        self._template_var.set(session.template or "General")
+        self._reset_stages()
+        self._update_transcript_display()
+        if session.speakers:
+            self._speaker_panel.populate(session)
+        # Enable relevant buttons based on what the session has
+        if session.audio_path:
+            self._process_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                      fg=styles.TEXT_PRIMARY)
+        if session.segments:
+            self._summarize_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                        fg=styles.TEXT_PRIMARY)
+            self._action_items_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                           fg=styles.TEXT_PRIMARY)
+            self._requirements_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                           fg=styles.TEXT_PRIMARY)
+            self._export_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                     fg=styles.TEXT_PRIMARY)
+            # Mark stages done
+            self._set_stage("transcribe", "done")
+            self._set_stage("diarize", "done")
+            self._set_stage("speakers", "done")
+            self._set_stage("complete", "done")
+        if session.summary:
+            self._email_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                    fg=styles.TEXT_PRIMARY)
+        self._set_status(f"Loaded: {session.display_name or session.session_id}")
+
+    def _bulk_process(self, session_ids: list) -> None:
+        """Sequentially process a list of unprocessed sessions."""
+        if not self._models_ready or not self._recording_svc:
+            messagebox.showwarning(
+                "Models Not Ready",
+                "Transcription/diarization models aren't loaded. "
+                "Check File > Settings and restart.")
+            return
+        logger.info(f"Bulk processing {len(session_ids)} sessions...")
+
+        def _worker():
+            for i, sid in enumerate(session_ids, 1):
+                try:
+                    session = self._session_svc.load_full(sid)
+                    if not session or not session.audio_path:
+                        continue
+                    self.after(0, lambda s=session, i=i, n=len(session_ids):
+                               self._set_status(
+                                   f"Processing {i}/{n}: {s.display_name}"))
+                    self._recording_svc.set_session(session)
+
+                    # Run the async process_session synchronously
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(self._recording_svc.process_session())
+                    finally:
+                        loop.close()
+
+                    self._session_svc.save(session)
+                    logger.info(f"Bulk-processed: {session.display_name}")
+                except Exception as e:
+                    logger.error(f"Bulk process failed for {sid}: {e}")
+            self.after(0, lambda: self._set_status(
+                f"Bulk process complete ({len(session_ids)} sessions)"))
+            self.after(0, lambda: messagebox.showinfo(
+                "Bulk Process Complete",
+                f"Processed {len(session_ids)} sessions."))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _open_logs_folder(self) -> None:
         logs_dir = os.path.abspath(self._settings.recordings_dir)
         try:
@@ -974,4 +1221,6 @@ class AppWindow(tk.Tk):
     def _on_close(self) -> None:
         if self._recording_svc and self._recording_svc.is_recording:
             self._recording_svc.stop_recording()
+        if self._calendar_monitor:
+            self._calendar_monitor.stop()
         self.destroy()

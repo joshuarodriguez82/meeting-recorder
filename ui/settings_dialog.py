@@ -18,7 +18,7 @@ class SettingsDialog(tk.Toplevel):
         self._saved = False
 
         self.title("Settings")
-        self.geometry("560x660")
+        self.geometry("560x720")
         self.resizable(False, False)
         self.configure(bg=styles.BG_DARK)
         self.transient(parent)
@@ -168,6 +168,26 @@ class SettingsDialog(tk.Toplevel):
                  bg=styles.BG_DARK, fg=styles.TEXT_HINT,
                  font=("Segoe UI", 9)).pack(anchor="w")
 
+        # Calendar section
+        self._section(outer, "Calendar")
+
+        notify_row = tk.Frame(outer, bg=styles.BG_DARK)
+        notify_row.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(notify_row, text="Notify Before", bg=styles.BG_DARK,
+                 fg=styles.TEXT_MUTED, font=styles.FONT_SMALL,
+                 width=16, anchor="w").pack(side=tk.LEFT)
+        self._notify_var = tk.IntVar(value=self._settings.notify_minutes_before)
+        notify_spin = tk.Spinbox(notify_row, from_=0, to=30,
+                                  textvariable=self._notify_var, width=5,
+                                  bg=styles.BG_INPUT, fg=styles.TEXT_PRIMARY,
+                                  font=styles.FONT_BODY, relief=tk.FLAT,
+                                  highlightbackground=styles.BORDER,
+                                  highlightthickness=1)
+        notify_spin.pack(side=tk.LEFT)
+        tk.Label(notify_row, text="minutes before meeting starts (0 = off)",
+                 bg=styles.BG_DARK, fg=styles.TEXT_HINT,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 0))
+
         # Buttons
         btn_row = tk.Frame(outer, bg=styles.BG_DARK)
         btn_row.pack(fill=tk.X, pady=(16, 0))
@@ -218,6 +238,7 @@ class SettingsDialog(tk.Toplevel):
                 recordings_dir=self._dir_var.get().strip() or "recordings",
                 email_to=self._email_var.get().strip(),
                 claude_model=self._claude_var.get(),
+                notify_minutes_before=self._notify_var.get(),
             )
             # Update device selections
             if self._device_panel:

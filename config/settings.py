@@ -24,6 +24,7 @@ class Settings:
     recordings_dir: str
     email_to: str
     claude_model: str
+    notify_minutes_before: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -40,6 +41,7 @@ class Settings:
             recordings_dir=os.getenv("RECORDINGS_DIR", "recordings"),
             email_to=os.getenv("EMAIL_TO", ""),
             claude_model=os.getenv("CLAUDE_MODEL", "claude-haiku-4-5"),
+            notify_minutes_before=int(os.getenv("NOTIFY_MINUTES_BEFORE", "2")),
         )
 
     @property
@@ -56,6 +58,7 @@ class Settings:
         recordings_dir: str,
         email_to: str = "",
         claude_model: str = "claude-haiku-4-5",
+        notify_minutes_before: int = 2,
     ) -> None:
         """Write settings back to the .env file."""
         content = (
@@ -66,5 +69,6 @@ class Settings:
             f"RECORDINGS_DIR={recordings_dir}\n"
             f"EMAIL_TO={email_to}\n"
             f"CLAUDE_MODEL={claude_model}\n"
+            f"NOTIFY_MINUTES_BEFORE={notify_minutes_before}\n"
         )
         ENV_PATH.write_text(content, encoding="utf-8")
