@@ -24,11 +24,15 @@ from services.recording_service import RecordingService
 from services.session_service import SessionService
 from ui import styles
 from ui.calendar_panel import CalendarPanel
+from ui.client_dashboard import ClientDashboard
+from ui.decision_log import DecisionLog
 from ui.device_panel import DevicePanel
 from ui.follow_up_tracker import FollowUpTracker
 from ui.prep_brief_dialog import PrepBriefDialog
 from ui.session_browser import SessionBrowser
 from ui.settings_dialog import SettingsDialog
+from ui.transcript_search import TranscriptSearch
+from ui.usage_guide import UsageGuide
 from ui.speaker_panel import SpeakerPanel
 from ui.transcript_panel import TranscriptPanel
 from utils.logger import get_logger
@@ -60,6 +64,7 @@ class AppWindow(tk.Tk):
         self._active_meeting: Optional[dict] = None
         self._progress_after = None
         self._models_ready = False
+        self._pending_attendees: list = []
 
         self._transcription: Optional[TranscriptionEngine] = None
         self._diarization: Optional[DiarizationEngine] = None
@@ -126,8 +131,16 @@ class AppWindow(tk.Tk):
                                  activeforeground=styles.ACCENT)
         sessions_menu.add_command(label="Session History...",
                                    command=self._open_session_history)
+        sessions_menu.add_command(label="Client Dashboard...",
+                                   command=self._open_client_dashboard)
+        sessions_menu.add_separator()
         sessions_menu.add_command(label="Follow-Up Tracker...",
                                    command=self._open_follow_up_tracker)
+        sessions_menu.add_command(label="Decision Log...",
+                                   command=self._open_decision_log)
+        sessions_menu.add_command(label="Transcript Search...",
+                                   command=self._open_transcript_search)
+        sessions_menu.add_separator()
         sessions_menu.add_command(label="Meeting Prep Brief...",
                                    command=self._open_prep_brief)
         menubar.add_cascade(label="Sessions", menu=sessions_menu)
@@ -136,6 +149,7 @@ class AppWindow(tk.Tk):
                             fg=styles.TEXT_PRIMARY,
                             activebackground=styles.ACCENT_BG,
                             activeforeground=styles.ACCENT)
+        help_menu.add_command(label="Usage Guide...", command=self._open_usage_guide)
         help_menu.add_command(label="Open Logs Folder", command=self._open_logs_folder)
         help_menu.add_separator()
         help_menu.add_command(label="About", command=self._show_about)
@@ -281,8 +295,13 @@ class AppWindow(tk.Tk):
 
         self._requirements_btn = self._pill_button(
             row2, "📝  Requirements", styles.BG_INPUT, self._extract_requirements, outline=True)
-        self._requirements_btn.pack(side=tk.LEFT)
+        self._requirements_btn.pack(side=tk.LEFT, padx=(0, 8))
         self._requirements_btn.config(state=tk.DISABLED)
+
+        self._decisions_btn = self._pill_button(
+            row2, "🎯  Decisions", styles.BG_INPUT, self._extract_decisions, outline=True)
+        self._decisions_btn.pack(side=tk.LEFT)
+        self._decisions_btn.config(state=tk.DISABLED)
 
         # ── Export row ────────────────────────────────────────────────
         row3 = tk.Frame(outer, bg=styles.BG_DARK)
@@ -502,6 +521,7 @@ class AppWindow(tk.Tk):
             self._summarize_btn.config(state=tk.DISABLED)
             self._action_items_btn.config(state=tk.DISABLED)
             self._requirements_btn.config(state=tk.DISABLED)
+            self._decisions_btn.config(state=tk.DISABLED)
             self._export_btn.config(state=tk.DISABLED)
             self._email_btn.config(state=tk.DISABLED)
             self._set_status("Recording...")
@@ -605,6 +625,8 @@ class AppWindow(tk.Tk):
                                        fg=styles.TEXT_PRIMARY)
         self._requirements_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                        fg=styles.TEXT_PRIMARY)
+        self._decisions_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                     fg=styles.TEXT_PRIMARY)
         self._export_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                  fg=styles.TEXT_PRIMARY)
         try:
@@ -694,13 +716,108 @@ class AppWindow(tk.Tk):
                     self._session_svc.save(session_ref)
                 except Exception:
                     pass
-                self._set_status("Auto-process complete.")
+                self.after(200, self._auto_chain_decisions)
             self.after(0, _apply)
 
         def _err(e):
             self.after(0, lambda: self._set_status(f"Auto-requirements failed: {e}"))
 
         _run_async_in_thread(_coro, _ok, _err)
+
+    def _auto_chain_decisions(self) -> None:
+        """Step 4: extract decisions, then optionally draft follow-up email."""
+        self._set_status("Auto: extracting decisions...")
+        transcript = self._session.full_transcript()
+        session_ref = self._session
+
+        def _coro():
+            return self._summarizer.extract_decisions(transcript)
+
+        def _ok(result):
+            def _apply():
+                session_ref.decisions = result
+                self._update_transcript_display()
+                try:
+                    self._export_svc.export_decisions(session_ref)
+                    self._session_svc.save(session_ref)
+                except Exception:
+                    pass
+                self._set_status("Auto-process complete.")
+                if self._settings.auto_follow_up_email:
+                    self._draft_follow_up_email(session_ref)
+            self.after(0, _apply)
+
+        def _err(e):
+            self.after(0, lambda: self._set_status(f"Auto-decisions failed: {e}"))
+
+        _run_async_in_thread(_coro, _ok, _err)
+
+    def _draft_follow_up_email(self, session: Session) -> None:
+        """Create an Outlook draft email with summary + action items to attendees."""
+        recipients = list(session.attendees or [])
+        if not recipients and self._settings.email_to:
+            recipients = [self._settings.email_to]
+        if not session.summary and not session.action_items:
+            logger.info("Skipping follow-up email — no summary/action items")
+            return
+        self._set_status("Drafting follow-up email...")
+
+        def _send():
+            try:
+                import pythoncom
+                import win32com.client
+                pythoncom.CoInitialize()
+                try:
+                    outlook = win32com.client.GetActiveObject("Outlook.Application")
+                except Exception:
+                    outlook = win32com.client.Dispatch("Outlook.Application")
+
+                mail = outlook.CreateItem(0)
+                title = session.display_name or "Meeting"
+                date_str = (session.started_at.strftime("%B %d, %Y")
+                            if session.started_at else "")
+
+                to_html = self._summarizer.summary_to_html if self._summarizer else (lambda x: x)
+                sections = ""
+                if session.summary:
+                    sections += self._email_section("Summary", to_html(session.summary))
+                if session.action_items:
+                    sections += self._email_section("Action Items",
+                                                      to_html(session.action_items))
+                if session.decisions:
+                    sections += self._email_section("Decisions",
+                                                      to_html(session.decisions))
+
+                html = f"""
+<html><body style="font-family:Segoe UI,sans-serif;color:#1a1a1a;max-width:680px;">
+<div style="background:#1565c0;padding:20px 24px;border-radius:8px;margin-bottom:20px;">
+  <h2 style="color:#ffffff;margin:0;font-size:18px;">Meeting Follow-Up</h2>
+  <p style="color:#e3f2fd;margin:4px 0 0;font-size:13px;">{title} &mdash; {date_str}</p>
+</div>
+<p>Hi all,</p>
+<p>Following up from our meeting. Recap and action items below — please let me
+know if anything is incorrect or missing.</p>
+{sections}
+<p style="font-size:11px;color:#aaa;margin-top:24px;
+          border-top:1px solid #eee;padding-top:12px;">
+  Drafted automatically by Meeting Recorder
+</p>
+</body></html>
+"""
+                mail.Subject = f"Follow-up: {title}"
+                mail.BodyFormat = 2
+                mail.HTMLBody = html
+                mail.To = "; ".join(recipients)
+                mail.Save()  # Save as draft rather than send
+                pythoncom.CoUninitialize()
+                self.after(0, lambda: self._set_status(
+                    "Follow-up email drafted — check Outlook Drafts."))
+            except Exception as e:
+                logger.error(f"Follow-up email draft failed: {e}")
+                self.after(0, lambda: self._set_status(
+                    f"Follow-up email failed: {e}"))
+
+        threading.Thread(target=_send, daemon=True).start()
 
     def _auto_identify_speakers(self, session: Session) -> None:
         transcript = session.full_transcript()
@@ -931,6 +1048,46 @@ class AppWindow(tk.Tk):
 
         _run_async_in_thread(_coro, _on_success, _on_error)
 
+    def _extract_decisions(self) -> None:
+        if not self._summarizer:
+            messagebox.showwarning("API Key Required",
+                "Anthropic API key required. Add it in File > Settings.")
+            return
+        if not self._session or not self._session.segments:
+            messagebox.showwarning("No Transcript", "Please process a recording first.")
+            return
+        transcript_snapshot = self._session.full_transcript()
+        session_ref = self._session
+        self._decisions_btn.config(state=tk.DISABLED, bg=styles.BG_INPUT,
+                                     fg=styles.TEXT_MUTED)
+        self._set_status("Extracting decisions...")
+        summarizer = self._summarizer
+
+        def _coro():
+            return summarizer.extract_decisions(transcript_snapshot)
+
+        def _on_success(result):
+            def _apply():
+                session_ref.decisions = result
+                self._update_transcript_display()
+                self._set_status("Decisions extracted.")
+                self._decisions_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                             fg=styles.TEXT_PRIMARY)
+                try:
+                    self._export_svc.export_decisions(session_ref)
+                    self._session_svc.save(session_ref)
+                except Exception as ex:
+                    logger.error(f"Failed to auto-save decisions: {ex}")
+            self.after(0, _apply)
+
+        def _on_error(e):
+            self.after(0, lambda: messagebox.showerror("Extraction Error", str(e)))
+            self.after(0, lambda: self._set_status("Decisions extraction failed."))
+            self.after(0, lambda: self._decisions_btn.config(
+                state=tk.NORMAL, bg=styles.ACCENT_DIM, fg=styles.TEXT_PRIMARY))
+
+        _run_async_in_thread(_coro, _on_success, _on_error)
+
     def _toggle_speakers(self) -> None:
         if self._speaker_expanded:
             self._speaker_body.pack_forget()
@@ -950,6 +1107,8 @@ class AppWindow(tk.Tk):
             parts.append("── SUMMARY ──\n\n" + self._session.summary)
         if self._session.action_items:
             parts.append("── ACTION ITEMS ──\n\n" + self._session.action_items)
+        if self._session.decisions:
+            parts.append("── DECISIONS ──\n\n" + self._session.decisions)
         if self._session.requirements:
             parts.append("── REQUIREMENTS ──\n\n" + self._session.requirements)
         self._transcript_panel.set_text("\n\n".join(parts))
@@ -1081,6 +1240,8 @@ class AppWindow(tk.Tk):
                 paths.append(self._export_svc.export_action_items(self._session))
             if self._session.requirements:
                 paths.append(self._export_svc.export_requirements(self._session))
+            if self._session.decisions:
+                paths.append(self._export_svc.export_decisions(self._session))
             msg = "Exported files:\n" + "\n".join(paths)
             messagebox.showinfo("Export Complete", msg)
         except Exception as e:
@@ -1190,11 +1351,15 @@ class AppWindow(tk.Tk):
             messagebox.showinfo("Already Recording",
                                 "A recording is already in progress.")
             return
-        # Format: "Meeting Subject - YYYY-MM-DD"
         date_str = meeting["start"].strftime("%Y-%m-%d")
         subject = meeting["subject"].strip() or "Meeting"
         self._meeting_name_var.set(f"{subject} - {date_str}")
+        # Remember attendees for later follow-up email
+        self._pending_attendees = list(meeting.get("attendees", []))
         self._toggle_recording()
+        # After starting, copy attendees onto the session
+        if self._session:
+            self._session.attendees = self._pending_attendees
 
     def _on_meeting_upcoming(self, meeting: dict) -> None:
         """Popup notification shown when a meeting is about to start."""
@@ -1272,6 +1437,27 @@ class AppWindow(tk.Tk):
             on_open_session=self._load_session_by_id,
         )
 
+    def _open_decision_log(self) -> None:
+        DecisionLog(
+            self, self._session_svc,
+            on_open_session=self._load_session_by_id,
+        )
+
+    def _open_transcript_search(self) -> None:
+        TranscriptSearch(
+            self, self._session_svc,
+            on_open_session=self._load_session_by_id,
+        )
+
+    def _open_client_dashboard(self) -> None:
+        ClientDashboard(
+            self, self._session_svc,
+            on_open_session=self._load_session_by_id,
+        )
+
+    def _open_usage_guide(self) -> None:
+        UsageGuide(self)
+
     def _open_prep_brief(self) -> None:
         """Generate a prep brief based on current meeting name + client/project."""
         if not self._summarizer:
@@ -1344,6 +1530,8 @@ class AppWindow(tk.Tk):
                                            fg=styles.TEXT_PRIMARY)
             self._requirements_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                            fg=styles.TEXT_PRIMARY)
+            self._decisions_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                         fg=styles.TEXT_PRIMARY)
             self._export_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                      fg=styles.TEXT_PRIMARY)
             # Mark stages done

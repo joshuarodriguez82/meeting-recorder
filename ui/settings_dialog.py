@@ -253,6 +253,42 @@ class SettingsDialog(tk.Toplevel):
                  bg=styles.BG_DARK, fg=styles.TEXT_HINT,
                  font=("Segoe UI", 9)).pack(anchor="w", padx=(28, 0))
 
+        # Auto follow-up email
+        follow_row = tk.Frame(outer, bg=styles.BG_DARK)
+        follow_row.pack(fill=tk.X, pady=(8, 0))
+        self._auto_follow_var = tk.BooleanVar(
+            value=self._settings.auto_follow_up_email)
+        tk.Checkbutton(
+            follow_row, text="Auto-draft follow-up email after processing",
+            variable=self._auto_follow_var,
+            bg=styles.BG_DARK, fg=styles.TEXT_PRIMARY,
+            font=styles.FONT_BODY, activebackground=styles.BG_DARK,
+            activeforeground=styles.TEXT_PRIMARY,
+            selectcolor=styles.BG_INPUT, bd=0,
+            highlightthickness=0).pack(side=tk.LEFT, anchor="w")
+        tk.Label(outer,
+                 text="Creates a draft in Outlook with summary + your action "
+                      "items (requires Outlook).",
+                 bg=styles.BG_DARK, fg=styles.TEXT_HINT,
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=(28, 0))
+
+        # Launch on startup
+        startup_row = tk.Frame(outer, bg=styles.BG_DARK)
+        startup_row.pack(fill=tk.X, pady=(8, 0))
+        self._startup_var = tk.BooleanVar(value=self._settings.launch_on_startup)
+        tk.Checkbutton(
+            startup_row, text="Launch on Windows startup",
+            variable=self._startup_var,
+            bg=styles.BG_DARK, fg=styles.TEXT_PRIMARY,
+            font=styles.FONT_BODY, activebackground=styles.BG_DARK,
+            activeforeground=styles.TEXT_PRIMARY,
+            selectcolor=styles.BG_INPUT, bd=0,
+            highlightthickness=0).pack(side=tk.LEFT, anchor="w")
+        tk.Label(outer,
+                 text="Adds a shortcut to the Windows Startup folder.",
+                 bg=styles.BG_DARK, fg=styles.TEXT_HINT,
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=(28, 0))
+
         # Populate the pinned footer with Save/Cancel (always visible)
         tk.Button(self._footer, text="Save", bg=styles.ACCENT, fg="#ffffff",
                   font=styles.FONT_BODY, relief=tk.FLAT, padx=20, pady=6,
@@ -303,7 +339,17 @@ class SettingsDialog(tk.Toplevel):
                 claude_model=self._claude_var.get(),
                 notify_minutes_before=self._notify_var.get(),
                 auto_process_after_stop=self._auto_process_var.get(),
+                launch_on_startup=self._startup_var.get(),
+                auto_follow_up_email=self._auto_follow_var.get(),
             )
+            # Sync startup shortcut to match setting
+            try:
+                from utils.startup_shortcut import apply as apply_startup
+                apply_startup(self._startup_var.get())
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Could not sync startup shortcut: {e}")
             # Update device selections
             if self._device_panel:
                 mic_val = self._mic_var.get()

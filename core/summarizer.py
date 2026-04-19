@@ -206,6 +206,43 @@ class Summarizer:
         except Exception as e:
             raise RuntimeError(f"Action items extraction failed: {e}") from e
 
+    async def extract_decisions(self, transcript: str) -> str:
+        """Extract decisions made with rationale — an auto-generated ADR log."""
+        logger.info("Extracting decisions from Claude...")
+        try:
+            message = await asyncio.wait_for(
+                self._client.messages.create(
+                    model=self._model,
+                    max_tokens=1024,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "Analyze this meeting transcript and extract every DECISION "
+                            "made. Return structured markdown with one entry per decision "
+                            "in this format:\n\n"
+                            "## Decision: [short title]\n"
+                            "- **Decided:** what was agreed upon\n"
+                            "- **Rationale:** why (context, drivers)\n"
+                            "- **Alternatives considered:** options that were rejected "
+                            "(if any mentioned)\n"
+                            "- **Owner:** who made the call (if identifiable)\n"
+                            "- **Impact:** systems/teams/clients affected\n\n"
+                            "Only include decisions that were actually MADE, not just "
+                            "discussed. Skip discussions without conclusions.\n\n"
+                            "If no decisions were made, write: 'No decisions made in this "
+                            "meeting.'\n\n"
+                            f"{transcript}"
+                        )
+                    }]
+                ),
+                timeout=60.0
+            )
+            result = message.content[0].text
+            logger.info("Decisions extracted.")
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Decisions extraction failed: {e}") from e
+
     async def meeting_prep_brief(self, prior_notes: str, upcoming_subject: str) -> str:
         """Generate a prep brief from prior meeting notes for an upcoming meeting."""
         logger.info(f"Generating prep brief for: {upcoming_subject}")

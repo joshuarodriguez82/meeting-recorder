@@ -69,12 +69,29 @@ def _parse_appointment(item, today: datetime.date) -> Optional[dict]:
 
         duration_min = max(1, int((end_local - start_local).total_seconds() / 60))
 
+        # Extract attendees if available
+        attendees = []
+        try:
+            for r in item.Recipients:
+                try:
+                    addr = str(getattr(r, "Address", "") or "")
+                    name = str(getattr(r, "Name", "") or "")
+                    if addr:
+                        attendees.append(addr)
+                    elif name:
+                        attendees.append(name)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
         return {
             "subject":  str(item.Subject) if item.Subject else "Untitled Meeting",
             "start":    start_local,
             "end":      end_local,
             "location": str(getattr(item, "Location", "") or ""),
             "organizer": str(getattr(item, "Organizer", "") or ""),
+            "attendees": attendees,
             "duration": duration_min,
         }
     except Exception as e:

@@ -26,6 +26,8 @@ class Settings:
     claude_model: str
     notify_minutes_before: int
     auto_process_after_stop: bool
+    launch_on_startup: bool
+    auto_follow_up_email: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -44,6 +46,8 @@ class Settings:
             claude_model=os.getenv("CLAUDE_MODEL", "claude-haiku-4-5"),
             notify_minutes_before=int(os.getenv("NOTIFY_MINUTES_BEFORE", "2")),
             auto_process_after_stop=os.getenv("AUTO_PROCESS_AFTER_STOP", "false").lower() == "true",
+            launch_on_startup=os.getenv("LAUNCH_ON_STARTUP", "false").lower() == "true",
+            auto_follow_up_email=os.getenv("AUTO_FOLLOW_UP_EMAIL", "false").lower() == "true",
         )
 
     @property
@@ -62,6 +66,8 @@ class Settings:
         claude_model: str = "claude-haiku-4-5",
         notify_minutes_before: int = 2,
         auto_process_after_stop: bool = False,
+        launch_on_startup: bool = False,
+        auto_follow_up_email: bool = False,
     ) -> None:
         """Write settings back to the .env file."""
         content = (
@@ -74,5 +80,7 @@ class Settings:
             f"CLAUDE_MODEL={claude_model}\n"
             f"NOTIFY_MINUTES_BEFORE={notify_minutes_before}\n"
             f"AUTO_PROCESS_AFTER_STOP={'true' if auto_process_after_stop else 'false'}\n"
+            f"LAUNCH_ON_STARTUP={'true' if launch_on_startup else 'false'}\n"
+            f"AUTO_FOLLOW_UP_EMAIL={'true' if auto_follow_up_email else 'false'}\n"
         )
         ENV_PATH.write_text(content, encoding="utf-8")

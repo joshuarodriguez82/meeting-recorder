@@ -32,6 +32,8 @@ INCLUDE = [
     "ui/__init__.py",
     "ui/app_window.py",
     "ui/calendar_panel.py",
+    "ui/client_dashboard.py",
+    "ui/decision_log.py",
     "ui/device_panel.py",
     "ui/follow_up_tracker.py",
     "ui/prep_brief_dialog.py",
@@ -40,9 +42,12 @@ INCLUDE = [
     "ui/speaker_panel.py",
     "ui/styles.py",
     "ui/transcript_panel.py",
+    "ui/transcript_search.py",
+    "ui/usage_guide.py",
     "utils/__init__.py",
     "utils/audio_utils.py",
     "utils/logger.py",
+    "utils/startup_shortcut.py",
 ]
 
 

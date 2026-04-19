@@ -69,6 +69,21 @@ class ExportService:
         logger.info(f"Action items exported: {path}")
         return str(path)
 
+    def export_decisions(self, session: Session) -> str:
+        if not session.decisions:
+            raise ValueError("No decisions to export.")
+        name = self._base_name(session)
+        path = self._dir / f"decisions_{name}.txt"
+        lines = []
+        if session.display_name:
+            lines.append(f"Meeting: {session.display_name}")
+            lines.append("=" * 60)
+            lines.append("")
+        lines.append(session.decisions)
+        path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info(f"Decisions exported: {path}")
+        return str(path)
+
     def export_requirements(self, session: Session) -> str:
         if not session.requirements:
             raise ValueError("No requirements to export.")
