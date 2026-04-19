@@ -25,6 +25,8 @@ from services.session_service import SessionService
 from ui import styles
 from ui.calendar_panel import CalendarPanel
 from ui.device_panel import DevicePanel
+from ui.follow_up_tracker import FollowUpTracker
+from ui.prep_brief_dialog import PrepBriefDialog
 from ui.session_browser import SessionBrowser
 from ui.settings_dialog import SettingsDialog
 from ui.speaker_panel import SpeakerPanel
@@ -124,6 +126,10 @@ class AppWindow(tk.Tk):
                                  activeforeground=styles.ACCENT)
         sessions_menu.add_command(label="Session History...",
                                    command=self._open_session_history)
+        sessions_menu.add_command(label="Follow-Up Tracker...",
+                                   command=self._open_follow_up_tracker)
+        sessions_menu.add_command(label="Meeting Prep Brief...",
+                                   command=self._open_prep_brief)
         menubar.add_cascade(label="Sessions", menu=sessions_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0, bg=styles.BG_PANEL,
@@ -186,9 +192,9 @@ class AppWindow(tk.Tk):
         self._name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6)
         self._meeting_name_var.trace_add("write", self._on_name_change)
 
-        # Template row
+        # Template + tags row
         template_row = tk.Frame(info_card, bg=styles.BG_PANEL)
-        template_row.pack(fill=tk.X, padx=14, pady=(0, 10))
+        template_row.pack(fill=tk.X, padx=14, pady=(0, 6))
         tk.Label(template_row, text="Template", bg=styles.BG_PANEL,
                  fg=styles.TEXT_HINT, font=styles.FONT_SMALL,
                  width=10, anchor="w").pack(side=tk.LEFT)
@@ -198,6 +204,26 @@ class AppWindow(tk.Tk):
             values=list(MEETING_TEMPLATES.keys()),
             state="readonly", width=24)
         template_combo.pack(side=tk.LEFT)
+
+        # Client/Project tags row
+        tag_row = tk.Frame(info_card, bg=styles.BG_PANEL)
+        tag_row.pack(fill=tk.X, padx=14, pady=(0, 10))
+        tk.Label(tag_row, text="Client", bg=styles.BG_PANEL,
+                 fg=styles.TEXT_HINT, font=styles.FONT_SMALL,
+                 width=10, anchor="w").pack(side=tk.LEFT)
+        self._client_var = tk.StringVar()
+        self._client_combo = ttk.Combobox(
+            tag_row, textvariable=self._client_var,
+            values=self._gather_existing("client"), width=20)
+        self._client_combo.pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(tag_row, text="Project", bg=styles.BG_PANEL,
+                 fg=styles.TEXT_HINT, font=styles.FONT_SMALL,
+                 width=8, anchor="w").pack(side=tk.LEFT)
+        self._project_var = tk.StringVar()
+        self._project_combo = ttk.Combobox(
+            tag_row, textvariable=self._project_var,
+            values=self._gather_existing("project"), width=24)
+        self._project_combo.pack(side=tk.LEFT)
 
         # Device panel (lives in settings dialog, created here for access)
         self._device_panel = DevicePanel(self)
@@ -409,6 +435,12 @@ class AppWindow(tk.Tk):
             name = datetime.datetime.now().strftime("%Y-%m-%d Meeting")
         return name
 
+    def _sync_tags_to_session(self) -> None:
+        """Copy client/project values from UI entries into the current session."""
+        if self._session:
+            self._session.client = self._client_var.get().strip()
+            self._session.project = self._project_var.get().strip()
+
     # ------------------------------------------------------------------ #
     # Progress stages
     # ------------------------------------------------------------------ #
@@ -478,9 +510,22 @@ class AppWindow(tk.Tk):
             self._rec_btn.config(text="⏺  Start Recording",
                                   bg=styles.DANGER, fg="#ffffff")
             self._load_btn.config(state=tk.NORMAL)
+            if self._session:
+                self._session.template = self._template_var.get()
+                self._sync_tags_to_session()
             if self._session and self._session.audio_path:
                 self._process_btn.config(state=tk.NORMAL,
                                           bg=styles.ACCENT_DIM, fg=styles.TEXT_PRIMARY)
+                # Persist the session record immediately so client/project tags are saved
+                # even if the user never processes it
+                try:
+                    self._session_svc.save(self._session)
+                except Exception as e:
+                    logger.warning(f"Could not save session metadata: {e}")
+                # Kick off auto-process if enabled
+                if self._settings.auto_process_after_stop and self._models_ready:
+                    self._set_status("Auto-processing...")
+                    self._process()
             self._set_status("Recording saved. Ready to process.")
 
     # ------------------------------------------------------------------ #
@@ -547,6 +592,7 @@ class AppWindow(tk.Tk):
     def _on_process_complete(self, session: Session) -> None:
         self._session = session
         self._session.display_name = self._get_meeting_name()
+        self._sync_tags_to_session()
         self._set_stage("transcribe", "done")
         self._set_stage("diarize", "done")
         self._set_stage("speakers", "active")
@@ -567,6 +613,94 @@ class AppWindow(tk.Tk):
         except Exception as e:
             logger.error(f"Failed to save session: {e}")
         self._auto_identify_speakers(session)
+
+        # Auto-chain: summarize → action items → requirements
+        if self._settings.auto_process_after_stop and self._summarizer:
+            self.after(500, self._auto_chain_summarize)
+
+    def _auto_chain_summarize(self) -> None:
+        """Step 1 of auto-chain: summarize, then trigger action items."""
+        if not self._session or not self._session.segments:
+            return
+        self._set_status("Auto: generating summary...")
+        transcript = self._session.full_transcript()
+        session_ref = self._session
+        template = self._template_var.get()
+        session_ref.template = template
+
+        def _coro():
+            return self._summarizer.summarize(transcript, template=template)
+
+        def _ok(result):
+            def _apply():
+                session_ref.summary = result
+                self._update_transcript_display()
+                try:
+                    self._export_svc.export_summary(session_ref)
+                    self._session_svc.save(session_ref)
+                except Exception:
+                    pass
+                self._email_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
+                                        fg=styles.TEXT_PRIMARY)
+                self.after(200, self._auto_chain_action_items)
+            self.after(0, _apply)
+
+        def _err(e):
+            self.after(0, lambda: self._set_status(f"Auto-summary failed: {e}"))
+
+        _run_async_in_thread(_coro, _ok, _err)
+
+    def _auto_chain_action_items(self) -> None:
+        """Step 2: extract action items, then trigger requirements."""
+        self._set_status("Auto: extracting action items...")
+        transcript = self._session.full_transcript()
+        session_ref = self._session
+
+        def _coro():
+            return self._summarizer.extract_action_items(transcript)
+
+        def _ok(result):
+            def _apply():
+                session_ref.action_items = result
+                self._update_transcript_display()
+                try:
+                    self._export_svc.export_action_items(session_ref)
+                    self._session_svc.save(session_ref)
+                except Exception:
+                    pass
+                self.after(200, self._auto_chain_requirements)
+            self.after(0, _apply)
+
+        def _err(e):
+            self.after(0, lambda: self._set_status(f"Auto-action-items failed: {e}"))
+
+        _run_async_in_thread(_coro, _ok, _err)
+
+    def _auto_chain_requirements(self) -> None:
+        """Step 3: extract requirements, then done."""
+        self._set_status("Auto: extracting requirements...")
+        transcript = self._session.full_transcript()
+        session_ref = self._session
+
+        def _coro():
+            return self._summarizer.extract_requirements(transcript)
+
+        def _ok(result):
+            def _apply():
+                session_ref.requirements = result
+                self._update_transcript_display()
+                try:
+                    self._export_svc.export_requirements(session_ref)
+                    self._session_svc.save(session_ref)
+                except Exception:
+                    pass
+                self._set_status("Auto-process complete.")
+            self.after(0, _apply)
+
+        def _err(e):
+            self.after(0, lambda: self._set_status(f"Auto-requirements failed: {e}"))
+
+        _run_async_in_thread(_coro, _ok, _err)
 
     def _auto_identify_speakers(self, session: Session) -> None:
         transcript = session.full_transcript()
@@ -979,6 +1113,15 @@ class AppWindow(tk.Tk):
         else:
             self.after(0, lambda: self._set_status(message))
 
+    def _gather_existing(self, key: str) -> list:
+        """Collect distinct values (client or project) from past sessions."""
+        try:
+            sessions = self._session_svc.list_sessions()
+        except Exception:
+            return []
+        values = sorted({s.get(key, "") for s in sessions if s.get(key, "").strip()})
+        return values
+
     def _pill_button(self, parent, text, color, command, outline=False) -> tk.Button:
         if outline:
             return tk.Button(
@@ -1040,14 +1183,17 @@ class AppWindow(tk.Tk):
             self._cal_expanded = True
 
     def _start_from_meeting(self, meeting: dict) -> None:
-        """Start recording with meeting name pre-filled."""
+        """Start recording with meeting name pre-filled from calendar."""
         if not self._recording_svc:
             return
         if self._recording_svc.is_recording:
             messagebox.showinfo("Already Recording",
                                 "A recording is already in progress.")
             return
-        self._meeting_name_var.set(meeting["subject"])
+        # Format: "Meeting Subject - YYYY-MM-DD"
+        date_str = meeting["start"].strftime("%Y-%m-%d")
+        subject = meeting["subject"].strip() or "Meeting"
+        self._meeting_name_var.set(f"{subject} - {date_str}")
         self._toggle_recording()
 
     def _on_meeting_upcoming(self, meeting: dict) -> None:
@@ -1120,6 +1266,52 @@ class AppWindow(tk.Tk):
             recordings_dir=self._settings.recordings_dir,
         )
 
+    def _open_follow_up_tracker(self) -> None:
+        FollowUpTracker(
+            self, self._session_svc,
+            on_open_session=self._load_session_by_id,
+        )
+
+    def _open_prep_brief(self) -> None:
+        """Generate a prep brief based on current meeting name + client/project."""
+        if not self._summarizer:
+            messagebox.showwarning("API Key Required",
+                "Anthropic API key required for prep briefs. "
+                "Add it in File > Settings.")
+            return
+
+        subject = self._meeting_name_var.get().strip() or "Upcoming Meeting"
+        client = self._client_var.get().strip()
+        project = self._project_var.get().strip()
+
+        # Find related sessions (match by client or project, excluding current session)
+        all_sessions = self._session_svc.list_sessions()
+        related = []
+        for s in all_sessions:
+            if self._session and s.get("session_id") == self._session.session_id:
+                continue
+            match_client = bool(client and s.get("client") == client)
+            match_project = bool(project and s.get("project") == project)
+            if match_client or match_project:
+                related.append(s)
+
+        if not related and not (client or project):
+            if not messagebox.askyesno(
+                    "No Client/Project Set",
+                    "No client or project tag set — brief will pull from ALL "
+                    "past meetings, which may be noisy.\n\n"
+                    "Continue anyway?"):
+                return
+            related = all_sessions[:10]  # newest 10 as fallback
+
+        def generator(prior_notes, upcoming_subject, on_result, on_error):
+            def _coro():
+                return self._summarizer.meeting_prep_brief(
+                    prior_notes, upcoming_subject)
+            _run_async_in_thread(_coro, on_result, on_error)
+
+        PrepBriefDialog(self, subject, related, generator)
+
     def _load_session_by_id(self, session_id: str) -> None:
         try:
             session = self._session_svc.load_full(session_id)
@@ -1135,6 +1327,8 @@ class AppWindow(tk.Tk):
             self._recording_svc.set_session(session)
         self._meeting_name_var.set(session.display_name or "")
         self._template_var.set(session.template or "General")
+        self._client_var.set(session.client or "")
+        self._project_var.set(session.project or "")
         self._reset_stages()
         self._update_transcript_display()
         if session.speakers:

@@ -18,8 +18,9 @@ class SettingsDialog(tk.Toplevel):
         self._saved = False
 
         self.title("Settings")
-        self.geometry("560x720")
-        self.resizable(False, False)
+        self.geometry("560x640")
+        self.minsize(520, 480)
+        self.resizable(True, True)
         self.configure(bg=styles.BG_DARK)
         self.transient(parent)
         self.grab_set()
@@ -27,18 +28,60 @@ class SettingsDialog(tk.Toplevel):
         # Center on parent
         self.update_idletasks()
         px = parent.winfo_x() + (parent.winfo_width() - 560) // 2
-        py = parent.winfo_y() + (parent.winfo_height() - 660) // 2
+        py = parent.winfo_y() + (parent.winfo_height() - 640) // 2
         self.geometry(f"+{px}+{py}")
 
         self._build()
 
     def _build(self):
-        outer = tk.Frame(self, bg=styles.BG_DARK)
-        outer.pack(fill=tk.BOTH, expand=True, padx=20, pady=16)
+        # Top-level container with pinned header + scrollable body + pinned footer
+        container = tk.Frame(self, bg=styles.BG_DARK)
+        container.pack(fill=tk.BOTH, expand=True)
 
-        tk.Label(outer, text="Settings", bg=styles.BG_DARK,
+        # Pinned header (packed first — top)
+        header = tk.Frame(container, bg=styles.BG_DARK)
+        header.pack(side=tk.TOP, fill=tk.X, padx=20, pady=(16, 8))
+        tk.Label(header, text="Settings", bg=styles.BG_DARK,
                  fg=styles.TEXT_PRIMARY, font=styles.FONT_HEADER).pack(
-                     anchor="w", pady=(0, 12))
+                     anchor="w")
+
+        # Pinned footer (packed second — bottom). Contents added later.
+        self._footer = tk.Frame(container, bg=styles.BG_DARK)
+        self._footer.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(8, 16))
+
+        # Scrollable body (packed last — fills remaining space)
+        body_wrap = tk.Frame(container, bg=styles.BG_DARK)
+        body_wrap.pack(side=tk.TOP, fill=tk.BOTH, expand=True,
+                        padx=16, pady=(0, 6))
+
+        canvas = tk.Canvas(body_wrap, bg=styles.BG_DARK,
+                            highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(body_wrap, orient="vertical",
+                                    command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        outer = tk.Frame(canvas, bg=styles.BG_DARK)
+        canvas_window = canvas.create_window((0, 0), window=outer, anchor="nw")
+
+        def _on_frame_resize(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_resize(e):
+            canvas.itemconfig(canvas_window, width=e.width)
+
+        outer.bind("<Configure>", _on_frame_resize)
+        canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Enable mousewheel scrolling
+        def _on_mousewheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        # Keep outer as the parent for all settings sections
+        outer.configure(padx=4, pady=4)
 
         # API Keys section
         self._section(outer, "API Keys")
@@ -188,16 +231,36 @@ class SettingsDialog(tk.Toplevel):
                  bg=styles.BG_DARK, fg=styles.TEXT_HINT,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 0))
 
-        # Buttons
-        btn_row = tk.Frame(outer, bg=styles.BG_DARK)
-        btn_row.pack(fill=tk.X, pady=(16, 0))
+        # Workflow section
+        self._section(outer, "Workflow")
 
-        tk.Button(btn_row, text="Save", bg=styles.ACCENT, fg="#ffffff",
+        auto_row = tk.Frame(outer, bg=styles.BG_DARK)
+        auto_row.pack(fill=tk.X, pady=(0, 4))
+        self._auto_process_var = tk.BooleanVar(
+            value=self._settings.auto_process_after_stop)
+        auto_check = tk.Checkbutton(
+            auto_row, text="Auto-process after recording stops",
+            variable=self._auto_process_var,
+            bg=styles.BG_DARK, fg=styles.TEXT_PRIMARY,
+            font=styles.FONT_BODY, activebackground=styles.BG_DARK,
+            activeforeground=styles.TEXT_PRIMARY,
+            selectcolor=styles.BG_INPUT, bd=0,
+            highlightthickness=0)
+        auto_check.pack(side=tk.LEFT, anchor="w")
+        tk.Label(outer,
+                 text="Runs transcribe → summarize → action items → "
+                      "requirements automatically.",
+                 bg=styles.BG_DARK, fg=styles.TEXT_HINT,
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=(28, 0))
+
+        # Populate the pinned footer with Save/Cancel (always visible)
+        tk.Button(self._footer, text="Save", bg=styles.ACCENT, fg="#ffffff",
                   font=styles.FONT_BODY, relief=tk.FLAT, padx=20, pady=6,
                   cursor="hand2", command=self._save).pack(side=tk.RIGHT)
-        tk.Button(btn_row, text="Cancel", bg=styles.BG_PANEL, fg=styles.TEXT_MUTED,
-                  font=styles.FONT_BODY, relief=tk.FLAT, padx=20, pady=6,
-                  cursor="hand2", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        tk.Button(self._footer, text="Cancel", bg=styles.BG_PANEL,
+                  fg=styles.TEXT_MUTED, font=styles.FONT_BODY, relief=tk.FLAT,
+                  padx=20, pady=6, cursor="hand2",
+                  command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
 
     def _section(self, parent, title):
         tk.Label(parent, text=title, bg=styles.BG_DARK,
@@ -239,6 +302,7 @@ class SettingsDialog(tk.Toplevel):
                 email_to=self._email_var.get().strip(),
                 claude_model=self._claude_var.get(),
                 notify_minutes_before=self._notify_var.get(),
+                auto_process_after_stop=self._auto_process_var.get(),
             )
             # Update device selections
             if self._device_panel:

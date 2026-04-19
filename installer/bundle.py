@@ -33,6 +33,8 @@ INCLUDE = [
     "ui/app_window.py",
     "ui/calendar_panel.py",
     "ui/device_panel.py",
+    "ui/follow_up_tracker.py",
+    "ui/prep_brief_dialog.py",
     "ui/session_browser.py",
     "ui/settings_dialog.py",
     "ui/speaker_panel.py",

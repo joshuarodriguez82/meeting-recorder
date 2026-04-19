@@ -129,6 +129,10 @@ class SessionService:
                 "has_summary": bool(data.get("summary")),
                 "has_action_items": bool(data.get("action_items")),
                 "has_requirements": bool(data.get("requirements")),
+                "client": data.get("client", "") or "",
+                "project": data.get("project", "") or "",
+                "action_items": data.get("action_items", "") or "",
+                "summary": data.get("summary", "") or "",
                 "json_path": str(path),
             })
 

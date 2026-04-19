@@ -19,6 +19,8 @@ class Session:
         self.action_items: Optional[str] = None
         self.requirements: Optional[str] = None
         self.template: str = "General"
+        self.client: str = ""
+        self.project: str = ""
 
     def get_or_create_speaker(self, speaker_id: str) -> Speaker:
         if speaker_id not in self.speakers:
@@ -54,6 +56,8 @@ class Session:
             "action_items": self.action_items,
             "requirements": self.requirements,
             "template": self.template,
+            "client": self.client,
+            "project": self.project,
         }
 
     @classmethod
@@ -78,6 +82,8 @@ class Session:
         session.action_items = data.get("action_items")
         session.requirements = data.get("requirements")
         session.template = data.get("template", "General") or "General"
+        session.client = data.get("client", "") or ""
+        session.project = data.get("project", "") or ""
 
         # Rebuild speakers
         speakers_data = data.get("speakers") or {}

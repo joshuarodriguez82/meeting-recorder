@@ -206,6 +206,45 @@ class Summarizer:
         except Exception as e:
             raise RuntimeError(f"Action items extraction failed: {e}") from e
 
+    async def meeting_prep_brief(self, prior_notes: str, upcoming_subject: str) -> str:
+        """Generate a prep brief from prior meeting notes for an upcoming meeting."""
+        logger.info(f"Generating prep brief for: {upcoming_subject}")
+        try:
+            message = await asyncio.wait_for(
+                self._client.messages.create(
+                    model=self._model,
+                    max_tokens=1024,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "You're preparing a Solutions Architect for an upcoming meeting. "
+                            "Based on the summaries, decisions, action items, and requirements "
+                            "from previous related meetings, generate a concise pre-meeting "
+                            "brief in markdown with these sections:\n\n"
+                            "## Recent Context\n"
+                            "Key topics discussed in recent meetings — 3-5 bullets.\n\n"
+                            "## Open Action Items\n"
+                            "Outstanding action items (especially for this person). "
+                            "Status and owner.\n\n"
+                            "## Open Questions / Risks\n"
+                            "Unresolved questions or risks raised previously.\n\n"
+                            "## Suggested Discussion Points\n"
+                            "What you should raise or follow up on in this meeting.\n\n"
+                            "Keep it tight and actionable. If a section has no content, "
+                            "write 'None.'\n\n"
+                            f"Upcoming meeting: {upcoming_subject}\n\n"
+                            f"=== PRIOR MEETING NOTES ===\n{prior_notes}"
+                        )
+                    }]
+                ),
+                timeout=60.0
+            )
+            result = message.content[0].text
+            logger.info("Prep brief generated.")
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Prep brief generation failed: {e}") from e
+
     async def extract_requirements(self, transcript: str) -> str:
         logger.info("Extracting requirements from Claude...")
         try:
