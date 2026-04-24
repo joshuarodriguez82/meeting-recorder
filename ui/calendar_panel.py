@@ -17,20 +17,39 @@ class CalendarPanel(tk.Frame):
         super().__init__(parent, bg=styles.BG_PANEL, **kwargs)
         self._on_record = on_record
         self._meetings: List[dict] = []
+        self._has_loaded = False  # True once a real result has been shown
 
-        self._placeholder = tk.Label(
-            self,
-            text="Loading calendar...",
-            bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
-            font=styles.FONT_SMALL,
-        )
-        self._placeholder.pack(pady=8)
+        self._show_status("Loading calendar...")
 
-    def load(self, meetings: List[dict]) -> None:
-        """Populate the panel with today's meetings."""
+    def _clear(self) -> None:
         for w in self.winfo_children():
             w.destroy()
+
+    def _show_status(self, text: str) -> None:
+        """Replace panel contents with a single status line (transient)."""
+        self._clear()
+        tk.Label(
+            self, text=text,
+            bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
+            font=styles.FONT_SMALL,
+        ).pack(pady=8, anchor="w")
+
+    def show_refreshing(self) -> None:
+        """Overlay a 'Refreshing...' hint WITHOUT wiping the current list.
+        Keeps meetings visible while a background fetch runs."""
+        if not self._has_loaded:
+            self._show_status("Loading calendar...")
+
+    def show_error(self, message: str) -> None:
+        """Show an error banner only if nothing is currently displayed."""
+        if not self._has_loaded:
+            self._show_status(message)
+
+    def load(self, meetings: List[dict]) -> None:
+        """Populate the panel with today's meetings. Always replaces content."""
+        self._clear()
         self._meetings = meetings
+        self._has_loaded = True
 
         if not meetings:
             tk.Label(

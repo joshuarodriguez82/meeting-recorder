@@ -5,7 +5,6 @@ Main application window — Material You dark theme.
 import asyncio
 import datetime
 import os
-import subprocess
 import threading
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
@@ -19,6 +18,7 @@ from core.transcription import TranscriptionEngine
 from models.session import Session
 from services.calendar_monitor import CalendarMonitor
 from services.calendar_service import get_todays_meetings, is_outlook_available
+from services.client_service import ClientService, resolve_export_dir
 from services.export_service import ExportService
 from services.recording_service import RecordingService
 from services.retention_service import cleanup as run_retention_cleanup
@@ -72,6 +72,7 @@ class AppWindow(tk.Tk):
         self._summarizer    = Summarizer(settings.anthropic_api_key, model=settings.claude_model) if settings.anthropic_api_key else None
         self._session_svc   = SessionService(settings.recordings_dir)
         self._export_svc    = ExportService(settings.recordings_dir)
+        self._client_svc    = ClientService(settings.recordings_dir)
 
         # Create recording service immediately — recording doesn't need AI models
         self._recording_svc = RecordingService(
@@ -254,8 +255,15 @@ class AppWindow(tk.Tk):
         self._client_var = tk.StringVar()
         self._client_combo = ttk.Combobox(
             tag_row, textvariable=self._client_var,
-            values=self._gather_existing("client"), width=20)
+            values=self._client_list_values(), width=20)
         self._client_combo.pack(side=tk.LEFT, padx=(0, 12))
+        self._client_combo.bind(
+            "<<ComboboxSelected>>", lambda e: self._on_client_selected())
+        tk.Button(
+            tag_row, text="⚙", bg=styles.BG_PANEL, fg=styles.ACCENT,
+            font=styles.FONT_SMALL, relief=tk.FLAT, padx=6, pady=0,
+            cursor="hand2", bd=0,
+            command=self._manage_clients).pack(side=tk.LEFT, padx=(0, 12))
         tk.Label(tag_row, text="Project", bg=styles.BG_PANEL,
                  fg=styles.TEXT_HINT, font=styles.FONT_SMALL,
                  width=8, anchor="w").pack(side=tk.LEFT)
@@ -481,10 +489,26 @@ class AppWindow(tk.Tk):
         return name
 
     def _sync_tags_to_session(self) -> None:
-        """Copy client/project values from UI entries into the current session."""
+        """Copy client/project values from UI entries into the current session.
+        Also resolves the client's configured output folder (if any) and
+        stores it on the session so processing/exports can route to it.
+        """
         if self._session:
             self._session.client = self._client_var.get().strip()
             self._session.project = self._project_var.get().strip()
+            self._session.client_folder = self._client_svc.folder_for(
+                self._session.client)
+
+    def _export_dir_for(self, session: Optional[Session]) -> str:
+        """Resolve the export directory for a session — client folder if
+        configured, otherwise the default recordings directory."""
+        if session is None:
+            return self._settings.recordings_dir
+        folder = (session.client_folder or "").strip()
+        # Fallback: re-resolve from current client if client_folder wasn't set
+        if not folder and session.client:
+            folder = self._client_svc.folder_for(session.client)
+        return resolve_export_dir(folder, self._settings.recordings_dir)
 
     # ------------------------------------------------------------------ #
     # Progress stages
@@ -657,7 +681,8 @@ class AppWindow(tk.Tk):
                                  fg=styles.TEXT_PRIMARY)
         try:
             self._session_svc.save(session)
-            self._export_svc.export_transcript(session)
+            self._export_svc.export_transcript(
+                session, export_dir=self._export_dir_for(session))
         except Exception as e:
             logger.error(f"Failed to save session: {e}")
         self._auto_identify_speakers(session)
@@ -684,7 +709,9 @@ class AppWindow(tk.Tk):
                 session_ref.summary = result
                 self._update_transcript_display()
                 try:
-                    self._export_svc.export_summary(session_ref)
+                    self._export_svc.export_summary(
+                        session_ref,
+                        export_dir=self._export_dir_for(session_ref))
                     self._session_svc.save(session_ref)
                 except Exception:
                     pass
@@ -712,7 +739,9 @@ class AppWindow(tk.Tk):
                 session_ref.action_items = result
                 self._update_transcript_display()
                 try:
-                    self._export_svc.export_action_items(session_ref)
+                    self._export_svc.export_action_items(
+                        session_ref,
+                        export_dir=self._export_dir_for(session_ref))
                     self._session_svc.save(session_ref)
                 except Exception:
                     pass
@@ -738,7 +767,9 @@ class AppWindow(tk.Tk):
                 session_ref.requirements = result
                 self._update_transcript_display()
                 try:
-                    self._export_svc.export_requirements(session_ref)
+                    self._export_svc.export_requirements(
+                        session_ref,
+                        export_dir=self._export_dir_for(session_ref))
                     self._session_svc.save(session_ref)
                 except Exception:
                     pass
@@ -764,7 +795,9 @@ class AppWindow(tk.Tk):
                 session_ref.decisions = result
                 self._update_transcript_display()
                 try:
-                    self._export_svc.export_decisions(session_ref)
+                    self._export_svc.export_decisions(
+                        session_ref,
+                        export_dir=self._export_dir_for(session_ref))
                     self._session_svc.save(session_ref)
                 except Exception:
                     pass
@@ -922,7 +955,8 @@ know if anything is incorrect or missing.</p>
             self._transcript_panel.set_text(session.full_transcript())
             try:
                 self._session_svc.save(session)
-                self._export_svc.export_transcript(session)
+                self._export_svc.export_transcript(
+                    session, export_dir=self._export_dir_for(session))
             except Exception as e:
                 logger.error(f"Failed to save after speaker rename: {e}")
             overlay.destroy()
@@ -980,7 +1014,9 @@ know if anything is incorrect or missing.</p>
                 self._email_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                         fg=styles.TEXT_PRIMARY)
                 try:
-                    self._export_svc.export_summary(session_ref)
+                    self._export_svc.export_summary(
+                        session_ref,
+                        export_dir=self._export_dir_for(session_ref))
                     self._session_svc.save(session_ref)
                 except Exception as ex:
                     logger.error(f"Failed to auto-save summary: {ex}")
@@ -1020,7 +1056,9 @@ know if anything is incorrect or missing.</p>
                 self._action_items_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                                fg=styles.TEXT_PRIMARY)
                 try:
-                    self._export_svc.export_action_items(session_ref)
+                    self._export_svc.export_action_items(
+                        session_ref,
+                        export_dir=self._export_dir_for(session_ref))
                     self._session_svc.save(session_ref)
                 except Exception as ex:
                     logger.error(f"Failed to auto-save action items: {ex}")
@@ -1060,7 +1098,9 @@ know if anything is incorrect or missing.</p>
                 self._requirements_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                                fg=styles.TEXT_PRIMARY)
                 try:
-                    self._export_svc.export_requirements(session_ref)
+                    self._export_svc.export_requirements(
+                        session_ref,
+                        export_dir=self._export_dir_for(session_ref))
                     self._session_svc.save(session_ref)
                 except Exception as ex:
                     logger.error(f"Failed to auto-save requirements: {ex}")
@@ -1100,7 +1140,9 @@ know if anything is incorrect or missing.</p>
                 self._decisions_btn.config(state=tk.NORMAL, bg=styles.ACCENT_DIM,
                                              fg=styles.TEXT_PRIMARY)
                 try:
-                    self._export_svc.export_decisions(session_ref)
+                    self._export_svc.export_decisions(
+                        session_ref,
+                        export_dir=self._export_dir_for(session_ref))
                     self._session_svc.save(session_ref)
                 except Exception as ex:
                     logger.error(f"Failed to auto-save decisions: {ex}")
@@ -1152,7 +1194,9 @@ know if anything is incorrect or missing.</p>
         date_str = datetime.datetime.now().strftime("%B %d, %Y").replace(" 0", " ")
         t_path   = None
         try:
-            t_path = self._export_svc.export_transcript(self._session)
+            t_path = self._export_svc.export_transcript(
+                self._session,
+                export_dir=self._export_dir_for(self._session))
         except Exception:
             pass
 
@@ -1258,16 +1302,25 @@ know if anything is incorrect or missing.</p>
             return
         try:
             self._session.display_name = self._get_meeting_name()
+            # Re-sync tags so client_folder is up to date in case the user
+            # just set it or changed the client dropdown.
+            self._sync_tags_to_session()
+            export_dir = self._export_dir_for(self._session)
             paths = []
-            paths.append(self._export_svc.export_transcript(self._session))
+            paths.append(self._export_svc.export_transcript(
+                self._session, export_dir=export_dir))
             if self._session.summary:
-                paths.append(self._export_svc.export_summary(self._session))
+                paths.append(self._export_svc.export_summary(
+                    self._session, export_dir=export_dir))
             if self._session.action_items:
-                paths.append(self._export_svc.export_action_items(self._session))
+                paths.append(self._export_svc.export_action_items(
+                    self._session, export_dir=export_dir))
             if self._session.requirements:
-                paths.append(self._export_svc.export_requirements(self._session))
+                paths.append(self._export_svc.export_requirements(
+                    self._session, export_dir=export_dir))
             if self._session.decisions:
-                paths.append(self._export_svc.export_decisions(self._session))
+                paths.append(self._export_svc.export_decisions(
+                    self._session, export_dir=export_dir))
             msg = "Exported files:\n" + "\n".join(paths)
             messagebox.showinfo("Export Complete", msg)
         except Exception as e:
@@ -1276,7 +1329,10 @@ know if anything is incorrect or missing.</p>
     def _open_recordings(self) -> None:
         folder = os.path.abspath(self._settings.recordings_dir)
         os.makedirs(folder, exist_ok=True)
-        subprocess.Popen(f'explorer "{folder}"')
+        try:
+            os.startfile(folder)
+        except OSError as e:
+            messagebox.showerror("Open Folder", f"Could not open folder:\n{e}")
 
     def _on_rename_speaker(self, speaker_id: str, name: str) -> None:
         if self._session:
@@ -1308,6 +1364,37 @@ know if anything is incorrect or missing.</p>
             return []
         values = sorted({s.get(key, "") for s in sessions if s.get(key, "").strip()})
         return values
+
+    def _client_list_values(self) -> list:
+        """Union of clients seen in past sessions plus clients with configured
+        folders (so a newly added client shows up before any recording)."""
+        from_sessions = set(self._gather_existing("client"))
+        from_config = {c["name"] for c in self._client_svc.load()}
+        return sorted(from_sessions | from_config)
+
+    def _on_client_selected(self) -> None:
+        """When a known client is picked, stamp its folder on the session."""
+        if self._session:
+            self._session.client = self._client_var.get().strip()
+            self._session.client_folder = self._client_svc.folder_for(
+                self._session.client)
+
+    def _manage_clients(self) -> None:
+        """Open the client folder management dialog."""
+        from ui.client_manager import ClientManagerDialog
+        ClientManagerDialog(
+            self, self._client_svc,
+            known_clients=self._gather_existing("client"),
+            on_change=self._on_clients_changed)
+
+    def _on_clients_changed(self) -> None:
+        """Refresh the client combobox after the manager saves."""
+        self._client_combo["values"] = self._client_list_values()
+        # Keep client_folder in sync if the currently-picked client's
+        # folder was just changed
+        if self._session:
+            self._session.client_folder = self._client_svc.folder_for(
+                self._session.client)
 
     def _pill_button(self, parent, text, color, command, outline=False) -> tk.Button:
         if outline:
@@ -1344,19 +1431,25 @@ know if anything is incorrect or missing.</p>
     # ------------------------------------------------------------------ #
 
     def _load_calendar(self) -> None:
-        """Background: fetch today's Outlook meetings."""
+        """Background: fetch today's Outlook meetings.
+
+        On success, replace the panel contents. On failure, keep whatever
+        is already displayed (prevents the 'flash away' bug) and only show
+        an error message if the panel has never loaded data yet.
+        """
         try:
             meetings = get_todays_meetings()
+            self.after(0, lambda m=meetings: self._calendar_panel.load(m))
         except Exception as e:
             logger.warning(f"Calendar load failed: {e}")
-            meetings = []
-        self.after(0, lambda: self._calendar_panel.load(meetings))
+            msg = f"Calendar unavailable: {e}"[:120]
+            self.after(0, lambda m=msg: self._calendar_panel.show_error(m))
 
     def _refresh_calendar(self) -> None:
-        self._calendar_panel.load([])  # show loading state
-        tk.Label(self._calendar_panel, text="Refreshing...",
-                 bg=styles.BG_PANEL, fg=styles.TEXT_HINT,
-                 font=styles.FONT_SMALL).pack(pady=8)
+        # Do NOT wipe the panel — keep existing rows visible while we fetch.
+        # If the fetch fails, existing rows stay; if it succeeds, they're
+        # replaced atomically in _load_calendar.
+        self._calendar_panel.show_refreshing()
         threading.Thread(target=self._load_calendar, daemon=True).start()
 
     def _toggle_calendar(self) -> None:

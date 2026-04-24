@@ -21,6 +21,7 @@ class Session:
         self.template: str = "General"
         self.client: str = ""
         self.project: str = ""
+        self.client_folder: str = ""  # Absolute path; empty means use default
         self.attendees: List[str] = []
         self.decisions: Optional[str] = None
 
@@ -60,6 +61,7 @@ class Session:
             "template": self.template,
             "client": self.client,
             "project": self.project,
+            "client_folder": self.client_folder,
             "attendees": self.attendees,
             "decisions": self.decisions,
         }
@@ -88,6 +90,7 @@ class Session:
         session.template = data.get("template", "General") or "General"
         session.client = data.get("client", "") or ""
         session.project = data.get("project", "") or ""
+        session.client_folder = data.get("client_folder", "") or ""
         session.attendees = list(data.get("attendees") or [])
         session.decisions = data.get("decisions")
 
