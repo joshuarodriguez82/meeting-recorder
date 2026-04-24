@@ -24,7 +24,7 @@ APP_FILES    = {}   # populated by bundle.py
 APP_ICON_B64 = ""
 
 APP_NAME    = "Meeting Recorder"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 PY_URL      = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
 MIN_DISK_GB = 5.0
 LOG_PATH    = Path(os.path.expanduser("~")) / "MeetingRecorderInstall.log"
