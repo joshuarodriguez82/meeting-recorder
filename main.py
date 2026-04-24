@@ -3,6 +3,13 @@ Meeting Recorder — application entry point.
 """
 
 import sys
+
+# Must run before any module that might spawn a subprocess (torch, pyannote,
+# faster-whisper, pywin32 can all trigger helper processes). Prevents
+# transient cmd.exe flashes under pythonw.exe on Windows.
+from utils.no_console import install as _install_no_console
+_install_no_console()
+
 import torch
 import numpy as np
 from torch.torch_version import TorchVersion
