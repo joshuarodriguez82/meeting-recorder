@@ -26,6 +26,7 @@ INCLUDE = [
     "services/__init__.py",
     "services/calendar_service.py",
     "services/calendar_monitor.py",
+    "services/client_service.py",
     "services/export_service.py",
     "services/recording_service.py",
     "services/retention_service.py",
@@ -34,6 +35,7 @@ INCLUDE = [
     "ui/app_window.py",
     "ui/calendar_panel.py",
     "ui/client_dashboard.py",
+    "ui/client_manager.py",
     "ui/decision_log.py",
     "ui/device_panel.py",
     "ui/follow_up_tracker.py",
@@ -48,6 +50,7 @@ INCLUDE = [
     "utils/__init__.py",
     "utils/audio_utils.py",
     "utils/logger.py",
+    "utils/no_console.py",
     "utils/startup_shortcut.py",
 ]
 
