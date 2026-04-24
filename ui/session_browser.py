@@ -5,7 +5,6 @@ Click a row to load the session. Bulk process unprocessed meetings.
 
 import datetime
 import os
-import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Callable, List, Optional
@@ -250,6 +249,6 @@ class SessionBrowser(tk.Toplevel):
     def _open_folder(self):
         folder = os.path.abspath(self._recordings_dir)
         try:
-            subprocess.Popen(f'explorer "{folder}"')
-        except Exception as e:
+            os.startfile(folder)
+        except OSError as e:
             messagebox.showerror("Open Folder", str(e), parent=self)

@@ -70,7 +70,8 @@ def enable() -> bool:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-File", str(ps_file)],
-            capture_output=True, text=True, timeout=15)
+            capture_output=True, text=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW)
         if r.returncode == 0 and lnk.exists():
             logger.info(f"Startup shortcut installed: {lnk}")
             return True
